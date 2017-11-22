@@ -19,6 +19,9 @@ from . import transaction
 import queue
 
 from .util import ThreadJob
+import socks
+import socket
+import time
 
 WALLET = None
 NETWORK = None
@@ -709,6 +712,50 @@ def test_lightning(wallet, network, config, port):
     server = get_server(int(port))
     server.serve_forever()
 
+# copier connects to the server in LightningWorker and to the SOCKS server
+# and copies between them
+class Copier:
+    def __init__(self, lightningWorkerPort):
+        self.lightningWorkerPort = lightningWorkerPort
+
+        # TODO proper retrying
+        # setting initial socket so that exceptions get thrown!
+        self.sockSocket = socks.socksocket()
+        #TODO not localhost
+        self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
+        self.sockSocket.connect(("42.42.42.42", 4242))
+        self.sockSocket.setblocking(False)
+        time.sleep(0.1)
+    def copy_request(self):
+        self.localSocket = socket.socket()
+        self.localSocket.connect(("localhost", self.lightningWorkerPort))
+        self.localSocket.setblocking(False)
+        time.sleep(0.1)
+        try:
+          bajts = self.sockSocket.recv(4096)
+        except BlockingIOError as e:
+          assert e.errno == 11
+        else:
+          self.localSocket.sendall(bajts)
+          self.localSocket.shutdown(socket.SHUT_WR)
+          return True
+        return False
+    def send_reply(self):
+        try:
+          localToProxy = self.localSocket.recv(4096)
+        except BlockingIOError as e:
+          print("could not read reply")
+          assert e.errno == 11
+        else:
+          if localToProxy != b"":
+            #self.sockSocket = socks.socksocket()
+            ##TODO not localhost
+            #self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
+            #self.sockSocket.connect(("42.42.42.42", 4242))
+            #self.sockSocket.setblocking(False)
+            self.sockSocket.sendall(localToProxy)
+            self.sockSocket.shutdown(socket.SHUT_RDWR)
+
 class LightningWorker(ThreadJob):
     def __init__(self, port, wallet, network, config):
         super(LightningWorker, self).__init__()
@@ -720,6 +767,7 @@ class LightningWorker(ThreadJob):
 
         deser = bitcoin.deserialize_xpub(wallet().keystore.xpub)
         assert deser[0] == "p2wpkh", deser
+
     def run(self):
         global WALLET, NETWORK
         global CONFIG
@@ -727,7 +775,17 @@ class LightningWorker(ThreadJob):
         if not self.server:
             self.server = get_server(self.port())
             self.server.timeout = 1
+            self.copier = None
+            try:
+              self.copier = Copier(self.port())
+            except socks.ProxyConnectionError:
+              print("could not contact proxy")
+            except:
+              print("could not create copier")
         WALLET = self.wallet()
         NETWORK = self.network()
         CONFIG = self.config()
-        self.server.handle_request()
+        if self.copier:
+            if self.copier.copy_request():
+                self.server.handle_request()
+                self.copier.send_reply()
