@@ -283,7 +283,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.need_update.set()
             self.gui_object.network_updated_signal_obj.network_updated_signal \
                 .emit(event, args)
-
         elif event == 'new_transaction':
             self.tx_notifications.append(args[0])
             self.notify_transactions_signal.emit()
@@ -305,6 +304,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             if self.config.is_dynfee():
                 self.fee_slider.update()
                 self.do_update_fee()
+            # todo: update only unconf
+            self.history_list.update()
         else:
             self.print_error("unexpected network_qt signal:", event, args)
 
