@@ -725,21 +725,36 @@ class Copier:
         self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
         self.sockSocket.connect(("42.42.42.42", 4242))
         self.sockSocket.setblocking(False)
-        time.sleep(0.1)
     def copy_request(self):
         self.localSocket = socket.socket()
         self.localSocket.connect(("localhost", self.lightningWorkerPort))
         self.localSocket.setblocking(False)
-        time.sleep(0.1)
-        try:
-          bajts = self.sockSocket.recv(4096)
-        except BlockingIOError as e:
-          assert e.errno == 11
-        else:
-          self.localSocket.sendall(bajts)
-          self.localSocket.shutdown(socket.SHUT_WR)
-          return True
-        return False
+        bajts = b''
+        for _ in range(100):
+          try:
+            bajts = self.sockSocket.recv(4096)
+          except BlockingIOError as e:
+            assert e.errno == 11
+            self.sockSocket = socks.socksocket()
+            #TODO not localhost
+            self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
+            try:
+              self.sockSocket.connect(("42.42.42.42", 4242))
+            except socks.GeneralProxyError:
+              return False
+            self.sockSocket.setblocking(False)
+          else:
+            if bajts == b'':
+              time.sleep(0.1)
+            else:
+              break
+        if bajts == b'':
+          return False
+        print("sent something")
+        self.localSocket.sendall(bajts)
+        self.localSocket.shutdown(socket.SHUT_WR)
+        time.sleep(1)
+        return True
     def send_reply(self):
         try:
           localToProxy = self.localSocket.recv(4096)
@@ -753,8 +768,20 @@ class Copier:
             #self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
             #self.sockSocket.connect(("42.42.42.42", 4242))
             #self.sockSocket.setblocking(False)
-            self.sockSocket.sendall(localToProxy)
-            self.sockSocket.shutdown(socket.SHUT_RDWR)
+            for _ in range(100):
+              self.sockSocket.sendall(localToProxy)
+              try:
+                self.sockSocket.shutdown(socket.SHUT_RDWR)
+              except OSError as e:
+                assert e.errno == 107 # transport endpoint not connected
+                self.sockSocket = socks.socksocket()
+                #TODO not localhost
+                self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
+                self.sockSocket.connect(("42.42.42.42", 4242))
+                self.sockSocket.setblocking(False)
+              else:
+                return
+            print("could not contact sockSocket")
 
 class LightningWorker(ThreadJob):
     def __init__(self, port, wallet, network, config):
@@ -772,16 +799,15 @@ class LightningWorker(ThreadJob):
         global WALLET, NETWORK
         global CONFIG
 
-        if not self.server:
-            self.server = get_server(self.port())
-            self.server.timeout = 1
-            self.copier = None
-            try:
-              self.copier = Copier(self.port())
-            except socks.ProxyConnectionError:
-              print("could not contact proxy")
-            except:
-              print("could not create copier")
+        self.server = get_server(self.port())
+        self.server.timeout = 1
+        self.copier = None
+        try:
+          self.copier = Copier(self.port())
+        except socks.ProxyConnectionError:
+          pass
+        except:
+          print("could not create copier")
         WALLET = self.wallet()
         NETWORK = self.network()
         CONFIG = self.config()
@@ -789,3 +815,4 @@ class LightningWorker(ThreadJob):
             if self.copier.copy_request():
                 self.server.handle_request()
                 self.copier.send_reply()
+        self.server.server_close()
