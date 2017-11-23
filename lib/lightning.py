@@ -730,19 +730,12 @@ class Copier:
         self.localSocket.connect(("localhost", self.lightningWorkerPort))
         self.localSocket.setblocking(False)
         bajts = b''
-        for _ in range(100):
+        for _ in range(50):
           try:
             bajts = self.sockSocket.recv(4096)
           except BlockingIOError as e:
             assert e.errno == 11
-            self.sockSocket = socks.socksocket()
-            #TODO not localhost
-            self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
-            try:
-              self.sockSocket.connect(("42.42.42.42", 4242))
-            except socks.GeneralProxyError:
-              return False
-            self.sockSocket.setblocking(False)
+            time.sleep(0.1)
           else:
             if bajts == b'':
               time.sleep(0.1)
@@ -750,7 +743,7 @@ class Copier:
               break
         if bajts == b'':
           return False
-        print("sent something")
+        print("sent ", bajts)
         self.localSocket.sendall(bajts)
         self.localSocket.shutdown(socket.SHUT_WR)
         time.sleep(1)
