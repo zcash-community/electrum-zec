@@ -223,6 +223,8 @@ def SendOutputs(json):
 
     elecOutputs = [(bitcoin.TYPE_SCRIPT, binascii.hexlify(txout.pkScript).decode("utf-8"), txout.value) for txout in req.outputs]
 
+    print("ignoring feeSatPerByte", req.feeSatPerByte)
+
     tx = None
     try:
         #                outputs,     password, config, fee
