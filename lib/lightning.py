@@ -23,6 +23,9 @@ import socks
 import socket
 import time
 
+import threading
+import json
+
 WALLET = None
 NETWORK = None
 CONFIG = None
@@ -659,15 +662,25 @@ class LightningRPC(ThreadJob):
     def __init__(self):
         super(LightningRPC, self).__init__()
         self.queue = queue.Queue()
-        self.client = Server("http://localhost:8090")
     # overridden
     def run(self):
         try:
             qitem = self.queue.get(block=False)
-            result = getattr(self.client, qitem.methodName)(qitem.args)
-            self.console.newResult.emit(repr(result))
         except queue.Empty:
             pass
+        else:
+            def call(qitem):
+                client = Server("http://localhost:8090")
+                result = getattr(client, qitem.methodName)(qitem.args)
+                if result["stderr"] == "" and result["returncode"] == 0:
+                    try:
+                        toprint = json.loads(result["stdout"])
+                    except ValueError:
+                        toprint = result
+                else:
+                    toprint = result
+                self.console.newResult.emit(json.dumps(toprint, indent=4))
+            threading.Thread(target=call, args=(qitem, )).start()
     def setConsole(self, console):
         self.console = console
 
