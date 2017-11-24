@@ -25,6 +25,7 @@ import time
 
 import threading
 import json
+import base64
 
 WALLET = None
 NETWORK = None
@@ -76,7 +77,7 @@ def FetchRootKey(json):
     request = rpc_pb2.FetchRootKeyRequest()
     json_format.Parse(json, request)
     m = rpc_pb2.FetchRootKeyResponse()
-    m.rootKey = os.urandom(32) # TODO derive from wallet
+    m.rootKey = WALLET.keystore.get_private_key([151,151,151,151], None)[0]
     msg = json_format.MessageToJson(m)
     return msg
 
@@ -671,7 +672,7 @@ class LightningRPC(ThreadJob):
         else:
             def call(qitem):
                 client = Server("http://localhost:8090")
-                result = getattr(client, qitem.methodName)(qitem.args)
+                result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
                 if result["stderr"] == "" and result["returncode"] == 0:
                     try:
                         toprint = json.loads(result["stdout"])
@@ -725,6 +726,10 @@ def test_lightning(wallet, network, config, port):
     server = get_server(int(port))
     server.serve_forever()
 
+privateKeyHash = None
+ip = lambda: "{}.{}.{}.{}".format(privateKeyHash[0], privateKeyHash[1], privateKeyHash[2], privateKeyHash[3])
+port = lambda: int.from_bytes(privateKeyHash[4:6], "big")
+
 # copier connects to the server in LightningWorker and to the SOCKS server
 # and copies between them
 class Copier:
@@ -736,7 +741,7 @@ class Copier:
         self.sockSocket = socks.socksocket()
         #TODO not localhost
         self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
-        self.sockSocket.connect(("42.42.42.42", 4242))
+        self.sockSocket.connect((ip(), port()))
         self.sockSocket.setblocking(False)
     def copy_request(self):
         self.localSocket = socket.socket()
@@ -783,7 +788,7 @@ class Copier:
                 self.sockSocket = socks.socksocket()
                 #TODO not localhost
                 self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
-                self.sockSocket.connect(("42.42.42.42", 4242))
+                self.sockSocket.connect((ip(), port()))
                 self.sockSocket.setblocking(False)
               else:
                 return
@@ -804,6 +809,13 @@ class LightningWorker(ThreadJob):
     def run(self):
         global WALLET, NETWORK
         global CONFIG
+        global privateKeyHash
+
+        WALLET = self.wallet()
+        NETWORK = self.network()
+        CONFIG = self.config()
+
+        privateKeyHash = bitcoin.Hash(WALLET.keystore.get_private_key([152,152,152,152], None)[0])
 
         self.server = get_server(self.port())
         self.server.timeout = 1
@@ -814,9 +826,6 @@ class LightningWorker(ThreadJob):
           pass
         except:
           print("could not create copier")
-        WALLET = self.wallet()
-        NETWORK = self.network()
-        CONFIG = self.config()
         if self.copier:
             if self.copier.copy_request():
                 self.server.handle_request()
