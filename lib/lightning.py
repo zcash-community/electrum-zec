@@ -32,6 +32,7 @@ NETWORK = None
 CONFIG = None
 locked = set()
 
+machine = "148.251.87.112"
 
 def SetHdSeed(json):
     req = rpc_pb2.SetHdSeedRequest()
@@ -223,7 +224,7 @@ def SendOutputs(json):
 
     elecOutputs = [(bitcoin.TYPE_SCRIPT, binascii.hexlify(txout.pkScript).decode("utf-8"), txout.value) for txout in req.outputs]
 
-    print("ignoring feeSatPerByte", req.feeSatPerByte)
+    print("ignoring feeSatPerByte", req.feeSatPerByte) # TODO
 
     tx = None
     try:
@@ -673,7 +674,7 @@ class LightningRPC(ThreadJob):
             pass
         else:
             def call(qitem):
-                client = Server("http://localhost:8090")
+                client = Server("http://" + machine + ":8090")
                 result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
                 if result["stderr"] == "" and result["returncode"] == 0:
                     try:
@@ -742,7 +743,7 @@ class Copier:
         # setting initial socket so that exceptions get thrown!
         self.sockSocket = socks.socksocket()
         #TODO not localhost
-        self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
+        self.sockSocket.set_proxy(socks.SOCKS4, machine, 1080)
         self.sockSocket.connect((ip(), port()))
         self.sockSocket.setblocking(False)
     def copy_request(self):
@@ -789,7 +790,7 @@ class Copier:
                 assert e.errno == 107 # transport endpoint not connected
                 self.sockSocket = socks.socksocket()
                 #TODO not localhost
-                self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
+                self.sockSocket.set_proxy(socks.SOCKS4, machine, 1080)
                 self.sockSocket.connect((ip(), port()))
                 self.sockSocket.setblocking(False)
               else:
@@ -798,36 +799,36 @@ class Copier:
 
 class LightningWorker(ThreadJob):
     def __init__(self, port, wallet, network, config):
+        global privateKeyHash
         super(LightningWorker, self).__init__()
         self.server = None
         self.port = port
         self.wallet = wallet
         self.network = network
         self.config = config
+        privateKeyHash = bitcoin.Hash(self.wallet().keystore.get_private_key([152,152,152,152], None)[0])
 
         deser = bitcoin.deserialize_xpub(wallet().keystore.xpub)
         assert deser[0] == "p2wpkh", deser
+        self.copier = None
+        try:
+          self.copier = Copier(self.port())
+        except socks.ProxyConnectionError:
+          print("proxy conn error")
+        except Exception as e:
+          traceback.print_exc()
+          print("could not create copier")
 
     def run(self):
         global WALLET, NETWORK
         global CONFIG
-        global privateKeyHash
 
         WALLET = self.wallet()
         NETWORK = self.network()
         CONFIG = self.config()
 
-        privateKeyHash = bitcoin.Hash(WALLET.keystore.get_private_key([152,152,152,152], None)[0])
-
         self.server = get_server(self.port())
         self.server.timeout = 1
-        self.copier = None
-        try:
-          self.copier = Copier(self.port())
-        except socks.ProxyConnectionError:
-          pass
-        except:
-          print("could not create copier")
         if self.copier:
             if self.copier.copy_request():
                 self.server.handle_request()
