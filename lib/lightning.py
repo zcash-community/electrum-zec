@@ -738,64 +738,72 @@ port = lambda: int.from_bytes(privateKeyHash[4:6], "big")
 class Copier:
     def __init__(self, lightningWorkerPort):
         self.lightningWorkerPort = lightningWorkerPort
-
-        # TODO proper retrying
-        # setting initial socket so that exceptions get thrown!
         self.sockSocket = socks.socksocket()
-        #TODO not localhost
+        self.reply = None
+    def connect_local(self):
+        self.localSocket = socket.socket()
+        self.localSocket.settimeout(1)
+        try:
+          self.localSocket.connect(("localhost", self.lightningWorkerPort))
+        except Exception as e:
+          print("during connect")
+          traceback.print_exc()
+    def connect_socksocket(self):
+        self.sockSocket = socks.socksocket()
         self.sockSocket.set_proxy(socks.SOCKS4, machine, 1080)
+        self.sockSocket.settimeout(1)
         self.sockSocket.connect((ip(), port()))
         self.sockSocket.setblocking(False)
+
     def copy_request(self):
-        self.localSocket = socket.socket()
-        self.localSocket.connect(("localhost", self.lightningWorkerPort))
-        self.localSocket.setblocking(False)
         bajts = b''
-        for _ in range(50):
-          try:
-            bajts = self.sockSocket.recv(4096)
-          except BlockingIOError as e:
-            assert e.errno == 11
-            time.sleep(0.1)
-          else:
-            if bajts == b'':
-              time.sleep(0.1)
-            else:
-              break
-        if bajts == b'':
+        try:
+          bajts = self.sockSocket.recv(4096)
+        except OSError as e:
+          if e.errno == 11: # resource temporarily unavailable
+            return False
+          print("could not contact sockSocket")
+          assert e.errno == 107 # transport endpoint not connected
+          self.connect_socksocket()
           return False
-        print("sent ", bajts)
+        except BlockingIOError as e:
+          assert e.errno == 11
+          print("blocking, wait")
+          return False
+        if bajts == b'':
+          print("read nothing!")
+          sys.exit(1)
+          return False
+        self.connect_local()
         self.localSocket.sendall(bajts)
         self.localSocket.shutdown(socket.SHUT_WR)
-        time.sleep(1)
+        print("sent ", bajts)
+        return True
+    def get_reply(self):
+        try:
+          self.reply = self.localSocket.recv(4096)
+        except BlockingIOError as e:
+          assert e.errno == 11
+          assert False, "could not read reply"
+        if self.reply == b"": return False
+        print(self.reply)
         return True
     def send_reply(self):
+        if self.reply is None or self.reply == b"":
+          print("no reply")
+          sys.exit(1)
+        self.sockSocket.sendall(self.reply)
         try:
-          localToProxy = self.localSocket.recv(4096)
-        except BlockingIOError as e:
-          print("could not read reply")
-          assert e.errno == 11
-        else:
-          if localToProxy != b"":
-            #self.sockSocket = socks.socksocket()
-            ##TODO not localhost
-            #self.sockSocket.set_proxy(socks.SOCKS4, "localhost", 1080)
-            #self.sockSocket.connect(("42.42.42.42", 4242))
-            #self.sockSocket.setblocking(False)
-            for _ in range(100):
-              self.sockSocket.sendall(localToProxy)
-              try:
-                self.sockSocket.shutdown(socket.SHUT_RDWR)
-              except OSError as e:
-                assert e.errno == 107 # transport endpoint not connected
-                self.sockSocket = socks.socksocket()
-                #TODO not localhost
-                self.sockSocket.set_proxy(socks.SOCKS4, machine, 1080)
-                self.sockSocket.connect((ip(), port()))
-                self.sockSocket.setblocking(False)
-              else:
-                return
-            print("could not contact sockSocket")
+          self.sockSocket.shutdown(socket.SHUT_RDWR)
+        except OSError as e:
+          print("could not contact sockSocket")
+          assert e.errno == 107 # transport endpoint not connected
+          self.connect_socksocket()
+          return False
+        self.connect_socksocket()
+        return True
+
+NEED_REQ, GOT_REQ, NEED_REPLY, GOT_REPLY = 0, 1, 2, 3
 
 class LightningWorker(ThreadJob):
     def __init__(self, port, wallet, network, config):
@@ -818,6 +826,11 @@ class LightningWorker(ThreadJob):
         except Exception as e:
           traceback.print_exc()
           print("could not create copier")
+        self.server = get_server(self.port())
+        self.server.timeout = 1
+        #self.server.server_close()
+
+        self.state = NEED_REQ
 
     def run(self):
         global WALLET, NETWORK
@@ -827,10 +840,16 @@ class LightningWorker(ThreadJob):
         NETWORK = self.network()
         CONFIG = self.config()
 
-        self.server = get_server(self.port())
-        self.server.timeout = 1
         if self.copier:
-            if self.copier.copy_request():
+            if self.state == NEED_REQ:
+                if self.copier.copy_request():
+                    self.state = GOT_REQ
+            elif self.state == GOT_REQ:
                 self.server.handle_request()
-                self.copier.send_reply()
-        self.server.server_close()
+                self.state = NEED_REPLY
+            elif self.state == NEED_REPLY:
+                if self.copier.get_reply():
+                    self.state = GOT_REPLY
+            elif self.state == GOT_REPLY:
+                if self.copier.send_reply():
+                    self.state = NEED_REQ
