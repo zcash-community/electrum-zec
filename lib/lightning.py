@@ -37,7 +37,7 @@ machine = "148.251.87.112"
 def SetHdSeed(json):
     req = rpc_pb2.SetHdSeedRequest()
     json_format.Parse(json, req)
-    print("set hdseed unimplemented", req.hdSeed)
+    print("set hdseed unimplemented", int.from_bytes(req.hdSeed, "big"))
     m = rpc_pb2.SetHdSeedResponse()
     msg = json_format.MessageToJson(m)
     return msg
@@ -250,7 +250,10 @@ def SendOutputs(json):
 def IsSynced(json):
     global NETWORK
     local_height, server_height = NETWORK.get_status_value("updated")
-    synced = NETWORK.is_up_to_date() and local_height == server_height
+    synced = NETWORK.is_up_to_date() and local_height >= server_height
+    if not synced:
+        print("local_height", local_height)
+        print("server_height", server_height)
     m = rpc_pb2.IsSyncedResponse()
     m.synced = synced
     return json_format.MessageToJson(m)
@@ -676,13 +679,12 @@ class LightningRPC(ThreadJob):
             def call(qitem):
                 client = Server("http://" + machine + ":8090")
                 result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
-                if result["stderr"] == "" and result["returncode"] == 0:
-                    try:
+                toprint = result
+                try:
+                    if result["stderr"] == "" and result["returncode"] == 0:
                         toprint = json.loads(result["stdout"])
-                    except ValueError:
-                        toprint = result
-                else:
-                    toprint = result
+                except:
+                    pass
                 self.console.newResult.emit(json.dumps(toprint, indent=4))
             threading.Thread(target=call, args=(qitem, )).start()
     def setConsole(self, console):
@@ -740,6 +742,7 @@ class Copier:
         self.lightningWorkerPort = lightningWorkerPort
         self.sockSocket = socks.socksocket()
         self.reply = None
+        self.method = None
     def connect_local(self):
         self.localSocket = socket.socket()
         self.localSocket.settimeout(1)
@@ -775,6 +778,7 @@ class Copier:
           sys.exit(1)
           return False
         self.connect_local()
+        self.method = json.loads(bajts.decode("ascii").split("\n")[-1].strip())["method"]
         self.localSocket.sendall(bajts)
         self.localSocket.shutdown(socket.SHUT_WR)
         print("sent ", bajts)
@@ -786,7 +790,10 @@ class Copier:
           assert e.errno == 11
           assert False, "could not read reply"
         if self.reply == b"": return False
+        print(self.method)
         print(self.reply)
+        #if self.method == "IsSynced":
+        #    assert json.loads(self.reply.decode("ascii").split("\n")[-1].strip())["result"] != "{}"
         return True
     def send_reply(self):
         if self.reply is None or self.reply == b"":
@@ -831,14 +838,22 @@ class LightningWorker(ThreadJob):
         #self.server.server_close()
 
         self.state = NEED_REQ
+        self.num = 0
 
     def run(self):
         global WALLET, NETWORK
         global CONFIG
 
+        if self.state == NEED_REQ:
+            self.num = self.num + 1
+            self.num %= 10
+            if self.num != 9:
+                return
+
         WALLET = self.wallet()
         NETWORK = self.network()
         CONFIG = self.config()
+
 
         if self.copier:
             if self.state == NEED_REQ:
@@ -846,6 +861,9 @@ class LightningWorker(ThreadJob):
                     self.state = GOT_REQ
             elif self.state == GOT_REQ:
                 self.server.handle_request()
+                self.server.server_close()
+                self.server = get_server(self.port())
+                self.server.timeout = 1
                 self.state = NEED_REPLY
             elif self.state == NEED_REPLY:
                 if self.copier.get_reply():
