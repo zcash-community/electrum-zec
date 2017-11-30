@@ -421,12 +421,12 @@ class Network(util.DaemonThread):
         self.set_proxy(proxy)
         self.start_interfaces()
 
-    def stop_network(self):
+    async def stop_network(self):
         self.print_error("stopping network")
         for interface in list(self.interfaces.values()):
-            self.close_interface(interface)
+            await self.close_interface(interface)
         if self.interface:
-            self.close_interface(self.interface)
+            await self.close_interface(self.interface)
         assert self.interface is None
         assert not self.interfaces
         self.connecting = set()
@@ -453,10 +453,12 @@ class Network(util.DaemonThread):
             return
         self.auto_connect = auto_connect
         if self.proxy != proxy or self.protocol != protocol:
-            # Restart the network defaulting to the given server
-            self.stop_network()
-            self.default_server = server
-            self.start_network(protocol, proxy)
+            async def job():
+                # Restart the network defaulting to the given server
+                await self.stop_network()
+                self.default_server = server
+                self.start_network(protocol, proxy)
+            asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
         elif self.default_server != server:
             async def job():
                 await self.switch_to_interface(server)
@@ -506,13 +508,13 @@ class Network(util.DaemonThread):
             self.set_status('connected')
             self.notify('updated')
 
-    def close_interface(self, interface):
+    async def close_interface(self, interface):
         if interface:
             if interface.server in self.interfaces:
                 self.interfaces.pop(interface.server)
             if interface.server == self.default_server:
                 self.interface = None
-            interface.close()
+            await interface.close()
 
     def add_recent_server(self, server):
         # list is ordered
@@ -597,7 +599,7 @@ class Network(util.DaemonThread):
                     self.subscribed_addresses.add(params[0])
             else:
                 if not response:  # Closed remotely / misbehaving
-                    self.connection_down(interface.server)
+                    await self.connection_down(interface.server)
                     break
                 # Rewrite response shape to match subscription request response
                 method = response.get('method')
@@ -686,14 +688,14 @@ class Network(util.DaemonThread):
                 if callback in v:
                     v.remove(callback)
 
-    def connection_down(self, server):
+    async def connection_down(self, server):
         '''A connection to server either went down, or was never made.
         We distinguish by whether it is in self.interfaces.'''
         self.disconnected_servers.add(server)
         if server == self.default_server:
             self.set_status('disconnected')
         if server in self.interfaces:
-            self.close_interface(self.interfaces[server])
+            await self.close_interface(self.interfaces[server])
             self.notify('interfaces')
         for b in self.blockchains.values():
             if b.catch_up == server:
@@ -724,13 +726,13 @@ class Network(util.DaemonThread):
             if socket:
                 await self.new_interface(server, socket)
             else:
-                self.connection_down(server)
+                await self.connection_down(server)
 
         # Send pings and shut down stale interfaces
         # must use copy of values
         for interface in list(self.interfaces.values()):
             if interface.has_timed_out():
-                self.connection_down(interface.server)
+                await self.connection_down(interface.server)
             elif interface.ping_required():
                 params = [ELECTRUM_VERSION, PROTOCOL_VERSION]
                 await self.queue_request('server.version', params, interface)
@@ -781,7 +783,7 @@ class Network(util.DaemonThread):
         connect = interface.blockchain.connect_chunk(index, result)
         # If not finished, get the next chunk
         if not connect:
-            self.connection_down(interface.server)
+            await self.connection_down(interface.server)
             return
         if interface.blockchain.height() < interface.tip:
             await self.request_chunk(interface, index+1)
@@ -803,12 +805,12 @@ class Network(util.DaemonThread):
         header = response.get('result')
         if not header:
             interface.print_error(response)
-            self.connection_down(interface.server)
+            await self.connection_down(interface.server)
             return
         height = header.get('block_height')
         if interface.request != height:
             interface.print_error("unsolicited header",interface.request, height)
-            self.connection_down(interface.server)
+            await self.connection_down(interface.server)
             return
 
         chain = blockchain.check_header(header)
@@ -821,7 +823,7 @@ class Network(util.DaemonThread):
                 next_height = (interface.bad + interface.good) // 2
             else:
                 if height == 0:
-                    self.connection_down(interface.server)
+                    await self.connection_down(interface.server)
                     next_height = None
                 else:
                     interface.bad = height
@@ -839,7 +841,7 @@ class Network(util.DaemonThread):
             if interface.bad != interface.good + 1:
                 next_height = (interface.bad + interface.good) // 2
             elif not interface.blockchain.can_connect(interface.bad_header, check_height=False):
-                self.connection_down(interface.server)
+                await self.connection_down(interface.server)
                 next_height = None
             else:
                 branch = self.blockchains.get(interface.bad)
@@ -916,11 +918,11 @@ class Network(util.DaemonThread):
         # refresh network dialog
         self.notify('interfaces')
 
-    def maintain_requests(self):
+    async def maintain_requests(self):
         for interface in list(self.interfaces.values()):
             if interface.request and time.time() - interface.request_time > 20:
                 interface.print_error("blockchain request timed out")
-                self.connection_down(interface.server)
+                await self.connection_down(interface.server)
                 continue
 
     async def wait_on_sockets(self):
@@ -986,10 +988,10 @@ class Network(util.DaemonThread):
         while self.is_running():
             await self.maintain_sockets()
             await self.wait_on_sockets()
-            self.maintain_requests()
+            await self.maintain_requests()
             self.run_jobs()    # Synchronizer and Verifier
             await self.process_pending_sends()
-        self.stop_network()
+        await self.stop_network()
         self.on_stop()
         future.set_result("Done")
 

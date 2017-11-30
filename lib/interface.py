@@ -268,7 +268,7 @@ class Interface(util.PrintError):
         # Needed for select
         return self.socket.fileno()
 
-    def close(self):
+    async def close(self):
         if not self.closed_remotely:
             try:
                 self.socket.shutdown(socket.SHUT_RDWR)
