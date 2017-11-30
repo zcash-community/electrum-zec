@@ -433,6 +433,7 @@ class Network(util.DaemonThread):
         # Get a new queue - no old pending connections thanks!
         self.socket_queue = queue.Queue()
 
+    # called from the Qt thread
     def set_parameters(self, host, port, protocol, proxy, auto_connect):
         proxy_str = serialize_proxy(proxy)
         server = serialize_server(host, port, protocol)
@@ -459,12 +460,12 @@ class Network(util.DaemonThread):
         elif self.default_server != server:
             async def job():
                 await self.switch_to_interface(server)
-            asyncio.ensure_future(job())
+            asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
         else:
             async def job():
                 await self.switch_lagging_interface()
                 self.notify('updated')
-            asyncio.ensure_future(job())
+            asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
 
     async def switch_to_random_interface(self):
         '''Switch to a random connected server other than the current one'''
@@ -970,11 +971,11 @@ class Network(util.DaemonThread):
         t.start()
 
     def run(self):
-        loop = asyncio.new_event_loop()
-        future = asyncio.Future(loop = loop)
-        asyncio.ensure_future(self.run_async(future), loop = loop)
-        loop.run_until_complete(future)
-        loop.close()
+        self.loop = asyncio.new_event_loop()
+        future = asyncio.Future(loop=self.loop)
+        asyncio.ensure_future(self.run_async(future), loop=self.loop)
+        self.loop.run_until_complete(future)
+        self.loop.close()
         future.exception()
         print(future.result())
 
@@ -1042,16 +1043,15 @@ class Network(util.DaemonThread):
                 out[k] = r
         return out
 
-    # this is called from the Qt thread
+    # called from the Qt thread
     def follow_chain(self, index):
-        went_in = False
         blockchain = self.blockchains.get(index)
         if blockchain:
             self.blockchain_index = index
             self.config.set_key('blockchain_index', index)
             for i in self.interfaces.values():
                 if i.blockchain == blockchain:
-                    asyncio.ensure_future(self.switch_to_interface(i.server))
+                    asyncio.run_coroutine_threadsafe(self.switch_to_interface(i.server), loop=self.loop)
                     break
         else:
             raise BaseException('blockchain not found', index)
