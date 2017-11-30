@@ -31,15 +31,15 @@ import re
 import select
 from collections import defaultdict
 import threading
-import socket
 import json
 import asyncio
+import traceback
 
 import socks
 from . import util
 from . import bitcoin
 from .bitcoin import *
-from .interface import Connection, Interface
+from .interface import Interface
 from . import blockchain
 from .version import ELECTRUM_VERSION, PROTOCOL_VERSION
 
@@ -185,7 +185,7 @@ class Network(util.DaemonThread):
         self.lock = threading.Lock()
         self.pending_sends = []
         self.message_id = 0
-        self.debug = True
+        self.debug = False
         self.irc_servers = {} # returned by interface (list from irc)
         self.recent_servers = self.read_recent_servers()
 
@@ -218,9 +218,9 @@ class Network(util.DaemonThread):
         self.interfaces = {}
         self.auto_connect = self.config.get('auto_connect', True)
         self.connecting = set()
-        self.socket_queue = queue.Queue()
-        self.start_network(deserialize_server(self.default_server)[2],
-                           deserialize_proxy(self.config.get('proxy')))
+        self.network_job = None
+        self.send_requests_jobs = None
+        self.process_responses_jobs = None
 
     def register_callback(self, callback, events):
         with self.lock:
@@ -347,7 +347,8 @@ class Network(util.DaemonThread):
 
     def get_parameters(self):
         host, port, protocol = deserialize_server(self.default_server)
-        return host, port, protocol, self.proxy, self.auto_connect
+        # TODO None was proxy. Proxy was removed for asyncio
+        return host, port, protocol, None, self.auto_connect
 
     def get_donation_address(self):
         if self.is_connected():
@@ -371,55 +372,56 @@ class Network(util.DaemonThread):
                     out[host] = { protocol:port }
         return out
 
-    def start_interface(self, server):
+    async def start_interface(self, server):
         if (not server in self.interfaces and not server in self.connecting):
             if server == self.default_server:
                 self.print_error("connecting to %s as new interface" % server)
                 self.set_status('connecting')
             self.connecting.add(server)
-            c = Connection(server, self.socket_queue, self.config.path)
+            await self.new_interface(server)
 
-    def start_random_interface(self):
+    async def start_random_interface(self):
         exclude_set = self.disconnected_servers.union(set(self.interfaces))
         server = pick_random_server(self.get_servers(), self.protocol, exclude_set)
         if server:
-            self.start_interface(server)
+            await self.start_interface(server)
 
-    def start_interfaces(self):
-        self.start_interface(self.default_server)
+    async def start_interfaces(self):
+        await self.start_interface(self.default_server)
+        print("started default server interface")
         for i in range(self.num_server - 1):
-            self.start_random_interface()
+            await self.start_random_interface()
 
-    def set_proxy(self, proxy):
-        self.proxy = proxy
-        # Store these somewhere so we can un-monkey-patch
-        if not hasattr(socket, "_socketobject"):
-            socket._socketobject = socket.socket
-            socket._getaddrinfo = socket.getaddrinfo
-        if proxy:
-            self.print_error('setting proxy', proxy)
-            proxy_mode = proxy_modes.index(proxy["mode"]) + 1
-            socks.setdefaultproxy(proxy_mode,
-                                  proxy["host"],
-                                  int(proxy["port"]),
-                                  # socks.py seems to want either None or a non-empty string
-                                  username=(proxy.get("user", "") or None),
-                                  password=(proxy.get("password", "") or None))
-            socket.socket = socks.socksocket
-            # prevent dns leaks, see http://stackoverflow.com/questions/13184205/dns-over-proxy
-            socket.getaddrinfo = lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
-        else:
-            socket.socket = socket._socketobject
-            socket.getaddrinfo = socket._getaddrinfo
+#    def set_proxy(self, proxy):
+#        self.proxy = proxy
+#        # Store these somewhere so we can un-monkey-patch
+#        if not hasattr(socket, "_socketobject"):
+#            socket._socketobject = socket.socket
+#            socket._getaddrinfo = socket.getaddrinfo
+#        if proxy:
+#            self.print_error('setting proxy', proxy)
+#            proxy_mode = proxy_modes.index(proxy["mode"]) + 1
+#            socks.setdefaultproxy(proxy_mode,
+#                                  proxy["host"],
+#                                  int(proxy["port"]),
+#                                  # socks.py seems to want either None or a non-empty string
+#                                  username=(proxy.get("user", "") or None),
+#                                  password=(proxy.get("password", "") or None))
+#            socket.socket = socks.socksocket
+#            # prevent dns leaks, see http://stackoverflow.com/questions/13184205/dns-over-proxy
+#            socket.getaddrinfo = lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
+#        else:
+#            socket.socket = socket._socketobject
+#            socket.getaddrinfo = socket._getaddrinfo
 
-    def start_network(self, protocol, proxy):
+    async def start_network(self, protocol, proxy):
+        # TODO proxy
         assert not self.interface and not self.interfaces
-        assert not self.connecting and self.socket_queue.empty()
+        assert not self.connecting
         self.print_error('starting network')
         self.disconnected_servers = set([])
         self.protocol = protocol
-        self.set_proxy(proxy)
-        self.start_interfaces()
+        await self.start_interfaces()
 
     async def stop_network(self):
         self.print_error("stopping network")
@@ -430,8 +432,6 @@ class Network(util.DaemonThread):
         assert self.interface is None
         assert not self.interfaces
         self.connecting = set()
-        # Get a new queue - no old pending connections thanks!
-        self.socket_queue = queue.Queue()
 
     # called from the Qt thread
     def set_parameters(self, host, port, protocol, proxy, auto_connect):
@@ -457,7 +457,7 @@ class Network(util.DaemonThread):
                 # Restart the network defaulting to the given server
                 await self.stop_network()
                 self.default_server = server
-                self.start_network(protocol, proxy)
+                await self.start_network(protocol, proxy)
             asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
         elif self.default_server != server:
             async def job():
@@ -495,7 +495,7 @@ class Network(util.DaemonThread):
         self.default_server = server
         if server not in self.interfaces:
             self.interface = None
-            self.start_interface(server)
+            await self.start_interface(server)
             return
         i = self.interfaces[server]
         if self.interface != i:
@@ -573,8 +573,8 @@ class Network(util.DaemonThread):
         return str(method) + (':' + str(params[0]) if params else '')
 
     async def process_responses(self, interface):
-        responses = interface.get_responses()
-        for request, response in responses:
+        print("processing responses")
+        for request, response in await interface.get_responses():
             if request:
                 method, params, message_id = request
                 k = self.get_index(method, params)
@@ -600,7 +600,7 @@ class Network(util.DaemonThread):
             else:
                 if not response:  # Closed remotely / misbehaving
                     await self.connection_down(interface.server)
-                    break
+                    return
                 # Rewrite response shape to match subscription request response
                 method = response.get('method')
                 params = response.get('params')
@@ -701,10 +701,14 @@ class Network(util.DaemonThread):
             if b.catch_up == server:
                 b.catch_up = None
 
-    async def new_interface(self, server, socket):
+    async def new_interface(self, server):
         # todo: get tip first, then decide which checkpoint to use.
         self.add_recent_server(server)
-        interface = Interface(server, socket)
+
+        host, port, protocol, proxy, auto_connect = self.get_parameters()
+        if protocol == "s": print("Interface cannot do SSL yet!") # TODO
+
+        interface = Interface(server, "{}:{}".format(host,port), self.loop)
         interface.blockchain = None
         interface.tip_header = None
         interface.tip = 0
@@ -715,18 +719,6 @@ class Network(util.DaemonThread):
         if server == self.default_server:
             await self.switch_to_interface(server)
         #self.notify('interfaces')
-
-    async def maintain_sockets(self):
-        '''Socket maintenance.'''
-        # Responses to connection attempts?
-        while not self.socket_queue.empty():
-            server, socket = self.socket_queue.get()
-            if server in self.connecting:
-                self.connecting.remove(server)
-            if socket:
-                await self.new_interface(server, socket)
-            else:
-                await self.connection_down(server)
 
         # Send pings and shut down stale interfaces
         # must use copy of values
@@ -740,7 +732,7 @@ class Network(util.DaemonThread):
         now = time.time()
         # nodes
         if len(self.interfaces) + len(self.connecting) < self.num_server:
-            self.start_random_interface()
+            await self.start_random_interface()
             if now - self.nodes_retry_time > NODES_RETRY_INTERVAL:
                 self.print_error('network: retrying connections')
                 self.disconnected_servers = set([])
@@ -925,27 +917,26 @@ class Network(util.DaemonThread):
                 await self.connection_down(interface.server)
                 continue
 
-    async def wait_on_sockets(self):
-        # Python docs say Windows doesn't like empty selects.
-        # Sleep to prevent busy looping
-        if not self.interfaces:
-            time.sleep(0.1)
-            return
-        rin = [i for i in self.interfaces.values()]
-        win = [i for i in self.interfaces.values() if i.num_requests()]
-        try:
-            rout, wout, xout = select.select(rin, win, [], 0.1)
-        except socket.error as e:
-            # TODO: py3, get code from e
-            code = None
-            if code == errno.EINTR:
-                return
-            raise
-        assert not xout
-        for interface in wout:
-            interface.send_requests()
-        for interface in rout:
-            await self.process_responses(interface)
+    def make_send_requests_jobs(self):
+        for interface in self.interfaces.values():
+            async def job():
+                try:
+                    while True:
+                        print("sending request")
+                        await interface.send_request()
+                except Exception as e:
+                    traceback.print_exc()
+            yield asyncio.ensure_future(job(), loop=self.loop)
+
+    def make_process_responses_jobs(self):
+        for interface in self.interfaces.values():
+            async def job():
+                try:
+                    while True:
+                        await self.process_responses(interface)
+                except Exception as e:
+                    traceback.print_exc()
+            yield asyncio.ensure_future(job(), loop=self.loop)
 
     def init_headers_file(self):
         b = self.blockchains[0]
@@ -972,8 +963,29 @@ class Network(util.DaemonThread):
         t.daemon = True
         t.start()
 
+    async def make_network_job(self, future):
+        try:
+            await self.start_network(deserialize_server(self.default_server)[2],
+                                     deserialize_proxy(self.config.get('proxy')))
+            self.send_requests_jobs = list(self.make_send_requests_jobs())
+            self.process_responses_jobs = list(self.make_process_responses_jobs())
+            print("made jobs")
+            future.set_result("all jobs started")
+        except Exception as e:
+            future.set_exception(e)
+
     def run(self):
+        print("run called")
         self.loop = asyncio.new_event_loop()
+
+        if not self.network_job:
+            future = asyncio.Future(loop=self.loop)
+            self.network_job = asyncio.ensure_future(self.make_network_job(future), loop=self.loop)
+            self.loop.run_until_complete(future)
+            print("unblocked")
+            future.exception()
+            print(future.result())
+
         future = asyncio.Future(loop=self.loop)
         asyncio.ensure_future(self.run_async(future), loop=self.loop)
         self.loop.run_until_complete(future)
@@ -982,18 +994,19 @@ class Network(util.DaemonThread):
         print(future.result())
 
     async def run_async(self, future):
-        self.init_headers_file()
-        while self.is_running() and self.downloading_headers:
-            time.sleep(1)
-        while self.is_running():
-            await self.maintain_sockets()
-            await self.wait_on_sockets()
-            await self.maintain_requests()
-            self.run_jobs()    # Synchronizer and Verifier
-            await self.process_pending_sends()
-        await self.stop_network()
-        self.on_stop()
-        future.set_result("Done")
+        try:
+            self.init_headers_file()
+            while self.is_running() and self.downloading_headers:
+                time.sleep(1)
+            while self.is_running():
+                await self.maintain_requests()
+                self.run_jobs()    # Synchronizer and Verifier
+                await self.process_pending_sends()
+            await self.stop_network()
+            self.on_stop()
+            future.set_result("Done")
+        except Exception as e:
+            future.set_exception(e)
 
     async def on_notify_header(self, interface, header):
         height = header.get('block_height')

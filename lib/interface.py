@@ -24,12 +24,12 @@
 # SOFTWARE.
 import os
 import re
-import socket
 import ssl
 import sys
 import threading
 import time
 import traceback
+import asyncio
 
 import requests
 
@@ -40,221 +40,26 @@ ca_path = requests.certs.where()
 from . import util
 from . import x509
 from . import pem
-
-
-def Connection(server, queue, config_path):
-    """Makes asynchronous connections to a remote electrum server.
-    Returns the running thread that is making the connection.
-
-    Once the thread has connected, it finishes, placing a tuple on the
-    queue of the form (server, socket), where socket is None if
-    connection failed.
-    """
-    host, port, protocol = server.rsplit(':', 2)
-    if not protocol in 'st':
-        raise Exception('Unknown protocol: %s' % protocol)
-    c = TcpConnection(server, queue, config_path)
-    c.start()
-    return c
-
-
-class TcpConnection(threading.Thread, util.PrintError):
-
-    def __init__(self, server, queue, config_path):
-        threading.Thread.__init__(self)
-        self.config_path = config_path
-        self.queue = queue
-        self.server = server
-        self.host, self.port, self.protocol = self.server.rsplit(':', 2)
-        self.host = str(self.host)
-        self.port = int(self.port)
-        self.use_ssl = (self.protocol == 's')
-        self.daemon = True
-
-    def diagnostic_name(self):
-        return self.host
-
-    def check_host_name(self, peercert, name):
-        """Simple certificate/host name checker.  Returns True if the
-        certificate matches, False otherwise.  Does not support
-        wildcards."""
-        # Check that the peer has supplied a certificate.
-        # None/{} is not acceptable.
-        if not peercert:
-            return False
-        if 'subjectAltName' in peercert:
-            for typ, val in peercert["subjectAltName"]:
-                if typ == "DNS" and val == name:
-                    return True
-        else:
-            # Only check the subject DN if there is no subject alternative
-            # name.
-            cn = None
-            for attr, val in peercert["subject"]:
-                # Use most-specific (last) commonName attribute.
-                if attr == "commonName":
-                    cn = val
-            if cn is not None:
-                return cn == name
-        return False
-
-    def get_simple_socket(self):
-        try:
-            l = socket.getaddrinfo(self.host, self.port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        except socket.gaierror:
-            self.print_error("cannot resolve hostname")
-            return
-        e = None
-        for res in l:
-            try:
-                s = socket.socket(res[0], socket.SOCK_STREAM)
-                s.settimeout(10)
-                s.connect(res[4])
-                s.settimeout(2)
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                return s
-            except BaseException as _e:
-                e = _e
-                continue
-        else:
-            self.print_error("failed to connect", str(e))
-
-    @staticmethod
-    def get_ssl_context(cert_reqs, ca_certs):
-        context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_certs)
-        context.check_hostname = False
-        context.verify_mode = cert_reqs
-
-        context.options |= ssl.OP_NO_SSLv2
-        context.options |= ssl.OP_NO_SSLv3
-        context.options |= ssl.OP_NO_TLSv1
-
-        return context
-
-    def get_socket(self):
-        if self.use_ssl:
-            cert_path = os.path.join(self.config_path, 'certs', self.host)
-            if not os.path.exists(cert_path):
-                is_new = True
-                s = self.get_simple_socket()
-                if s is None:
-                    return
-                # try with CA first
-                try:
-                    context = self.get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_path)
-                    s = context.wrap_socket(s, do_handshake_on_connect=True)
-                except ssl.SSLError as e:
-                    print_error(e)
-                    s = None
-                except:
-                    return
-
-                if s and self.check_host_name(s.getpeercert(), self.host):
-                    self.print_error("SSL certificate signed by CA")
-                    return s
-                # get server certificate.
-                # Do not use ssl.get_server_certificate because it does not work with proxy
-                s = self.get_simple_socket()
-                if s is None:
-                    return
-                try:
-                    context = self.get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
-                    s = context.wrap_socket(s)
-                except ssl.SSLError as e:
-                    self.print_error("SSL error retrieving SSL certificate:", e)
-                    return
-                except:
-                    return
-
-                dercert = s.getpeercert(True)
-                s.close()
-                cert = ssl.DER_cert_to_PEM_cert(dercert)
-                # workaround android bug
-                cert = re.sub("([^\n])-----END CERTIFICATE-----","\\1\n-----END CERTIFICATE-----",cert)
-                temporary_path = cert_path + '.temp'
-                with open(temporary_path,"w") as f:
-                    f.write(cert)
-            else:
-                is_new = False
-
-        s = self.get_simple_socket()
-        if s is None:
-            return
-
-        if self.use_ssl:
-            try:
-                context = self.get_ssl_context(cert_reqs=ssl.CERT_REQUIRED,
-                                               ca_certs=(temporary_path if is_new else cert_path))
-                s = context.wrap_socket(s, do_handshake_on_connect=True)
-            except socket.timeout:
-                self.print_error('timeout')
-                return
-            except ssl.SSLError as e:
-                self.print_error("SSL error:", e)
-                if e.errno != 1:
-                    return
-                if is_new:
-                    rej = cert_path + '.rej'
-                    if os.path.exists(rej):
-                        os.unlink(rej)
-                    os.rename(temporary_path, rej)
-                else:
-                    with open(cert_path) as f:
-                        cert = f.read()
-                    try:
-                        b = pem.dePem(cert, 'CERTIFICATE')
-                        x = x509.X509(b)
-                    except:
-                        traceback.print_exc(file=sys.stderr)
-                        self.print_error("wrong certificate")
-                        return
-                    try:
-                        x.check_date()
-                    except:
-                        self.print_error("certificate has expired:", cert_path)
-                        os.unlink(cert_path)
-                        return
-                    self.print_error("wrong certificate")
-                if e.errno == 104:
-                    return
-                return
-            except BaseException as e:
-                self.print_error(e)
-                traceback.print_exc(file=sys.stderr)
-                return
-
-            if is_new:
-                self.print_error("saving certificate")
-                os.rename(temporary_path, cert_path)
-
-        return s
-
-    def run(self):
-        socket = self.get_socket()
-        if socket:
-            self.print_error("connected")
-        self.queue.put((self.server, socket))
-
+from . import aio
 
 class Interface(util.PrintError):
     """The Interface class handles a socket connected to a single remote
     electrum server.  It's exposed API is:
 
     - Member functions close(), fileno(), get_responses(), has_timed_out(),
-      ping_required(), queue_request(), send_requests()
+      ping_required(), queue_request(), send_request()
     - Member variable server.
     """
 
-    def __init__(self, server, socket):
+    def __init__(self, server, hostname_port, loop):
         self.server = server
         self.host, _, _ = server.rsplit(':', 2)
-        self.socket = socket
 
-        self.pipe = util.SocketPipe(socket)
-        self.pipe.set_timeout(0.0)  # Don't wait for data
+        print("constructing socketpipe")
+        self.pipe = aio.SocketPipe(hostname_port, loop)
         # Dump network messages.  Set at runtime from the console.
-        self.debug = True
-        self.unsent_requests = []
+        self.debug = False
+        self.unsent_requests = asyncio.Queue(loop=loop)
         self.unanswered_requests = {}
         # Set last ping to zero to ensure immediate ping
         self.last_request = time.time()
@@ -264,41 +69,33 @@ class Interface(util.PrintError):
     def diagnostic_name(self):
         return self.host
 
-    def fileno(self):
-        # Needed for select
-        return self.socket.fileno()
-
     async def close(self):
-        if not self.closed_remotely:
-            try:
-                self.socket.shutdown(socket.SHUT_RDWR)
-            except socket.error:
-                pass
-        self.socket.close()
+        await self.pipe.close()
 
     async def queue_request(self, *args):  # method, params, _id
         '''Queue a request, later to be send with send_requests when the
         socket is available for writing.
         '''
+        print("queue_request called")
         self.request_time = time.time()
-        self.unsent_requests.append(args)
+        await self.unsent_requests.put(args)
 
     def num_requests(self):
         '''Keep unanswered requests below 100'''
         n = 100 - len(self.unanswered_requests)
-        return min(n, len(self.unsent_requests))
+        return min(n, self.unsent_requests.qsize())
 
-    def send_requests(self):
+    async def send_request(self):
         '''Sends queued requests.  Returns False on failure.'''
         make_dict = lambda m, p, i: {'method': m, 'params': p, 'id': i}
         n = self.num_requests()
-        wire_requests = self.unsent_requests[0:n]
+        r = await self.unsent_requests.get()
         try:
-            self.pipe.send_all([make_dict(*r) for r in wire_requests])
-        except socket.error as e:
+            await self.pipe.send_all([make_dict(*r)])
+        except Exception as e:
             self.print_error("socket error:", e)
+            await self.unsent_requests.put(r)
             return False
-        self.unsent_requests = self.unsent_requests[n:]
         for request in wire_requests:
             if self.debug:
                 self.print_error("-->", request)
@@ -324,7 +121,7 @@ class Interface(util.PrintError):
 
         return False
 
-    def get_responses(self):
+    async def get_responses(self):
         '''Call if there is data available on the socket.  Returns a list of
         (request, response) pairs.  Notifications are singleton
         unsolicited responses presumably as a result of prior
@@ -335,10 +132,7 @@ class Interface(util.PrintError):
         '''
         responses = []
         while True:
-            try:
-                response = self.pipe.get()
-            except util.timeout:
-                break
+            response = await self.pipe.get()
             if not type(response) is dict:
                 responses.append((None, None))
                 if response is None:

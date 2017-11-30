@@ -47,3 +47,28 @@ def asyncio_test(thiswallet):
     loop.run_until_complete(future)
     loop.close()
     return future.result()
+
+class SocketPipe:
+    def __init__(self, hostname_port, loop):
+        print("ignoring " + hostname_port)
+        #self.hostname_port = hostname_port
+        self.hostname_port = "148.251.87.112:51002"
+        self.reader = self.writer = None
+        self.loop = loop
+    async def _make_read_write(self):
+        reader, writer = await asyncio.open_connection(self.hostname_port.split(":")[0], int(self.hostname_port.split(":")[1]), loop=self.loop)
+        self.reader = reader
+        self.writer = writer
+    async def send_all(self, list_of_requests):
+        if not self.writer: await self._make_read_write()
+        for i in list_of_requests:
+            self.writer.write(json.dumps(i).encode("ascii") + b"\n")
+        await self.writer.drain()
+    async def close(self):
+        assert self.writer
+        self.writer.close()
+    async def get(self):
+        if not self.reader: await self._make_read_write()
+        return await read_reply(self.reader)
+    def idle_time():
+        return 0
