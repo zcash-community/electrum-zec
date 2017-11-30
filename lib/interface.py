@@ -276,7 +276,7 @@ class Interface(util.PrintError):
                 pass
         self.socket.close()
 
-    def queue_request(self, *args):  # method, params, _id
+    async def queue_request(self, *args):  # method, params, _id
         '''Queue a request, later to be send with send_requests when the
         socket is available for writing.
         '''

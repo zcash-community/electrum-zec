@@ -33,6 +33,7 @@ from collections import defaultdict
 import threading
 import socket
 import json
+import asyncio
 
 import socks
 from . import util
@@ -157,7 +158,7 @@ class Network(util.DaemonThread):
 
     - Member functions get_header(), get_interfaces(), get_local_height(),
           get_parameters(), get_server_height(), get_status_value(),
-          is_connected(), set_parameters(), stop()
+          is_connected(), set_parameters(), stop(), follow_chain()
     """
 
     def __init__(self, config=None):
@@ -286,7 +287,7 @@ class Network(util.DaemonThread):
     def is_up_to_date(self):
         return self.unanswered_requests == {}
 
-    def queue_request(self, method, params, interface=None):
+    async def queue_request(self, method, params, interface=None):
         # If you want to queue a request on any interface it must go
         # through this function so message ids are properly tracked
         if interface is None:
@@ -295,33 +296,33 @@ class Network(util.DaemonThread):
         self.message_id += 1
         if self.debug:
             self.print_error(interface.host, "-->", method, params, message_id)
-        interface.queue_request(method, params, message_id)
+        await interface.queue_request(method, params, message_id)
         return message_id
 
-    def send_subscriptions(self):
+    async def send_subscriptions(self):
         self.print_error('sending subscriptions to', self.interface.server, len(self.unanswered_requests), len(self.subscribed_addresses))
         self.sub_cache.clear()
         # Resend unanswered requests
         requests = self.unanswered_requests.values()
         self.unanswered_requests = {}
         for request in requests:
-            message_id = self.queue_request(request[0], request[1])
+            message_id = await self.queue_request(request[0], request[1])
             self.unanswered_requests[message_id] = request
-        self.queue_request('server.banner', [])
-        self.queue_request('server.donation_address', [])
-        self.queue_request('server.peers.subscribe', [])
-        self.request_fee_estimates()
-        self.queue_request('blockchain.relayfee', [])
+        await self.queue_request('server.banner', [])
+        await self.queue_request('server.donation_address', [])
+        await self.queue_request('server.peers.subscribe', [])
+        await self.request_fee_estimates()
+        await self.queue_request('blockchain.relayfee', [])
         if self.interface.ping_required():
             params = [ELECTRUM_VERSION, PROTOCOL_VERSION]
-            self.queue_request('server.version', params, self.interface)
+            await self.queue_request('server.version', params, self.interface)
         for h in self.subscribed_addresses:
-            self.queue_request('blockchain.scripthash.subscribe', [h])
+            await self.queue_request('blockchain.scripthash.subscribe', [h])
 
-    def request_fee_estimates(self):
+    async def request_fee_estimates(self):
         self.config.requested_fee_estimates()
         for i in bitcoin.FEE_TARGETS:
-            self.queue_request('blockchain.estimatefee', [i])
+            await self.queue_request('blockchain.estimatefee', [i])
 
     def get_status_value(self, key):
         if key == 'status':
@@ -456,20 +457,24 @@ class Network(util.DaemonThread):
             self.default_server = server
             self.start_network(protocol, proxy)
         elif self.default_server != server:
-            self.switch_to_interface(server)
+            async def job():
+                await self.switch_to_interface(server)
+            asyncio.ensure_future(job())
         else:
-            self.switch_lagging_interface()
-            self.notify('updated')
+            async def job():
+                await self.switch_lagging_interface()
+                self.notify('updated')
+            asyncio.ensure_future(job())
 
-    def switch_to_random_interface(self):
+    async def switch_to_random_interface(self):
         '''Switch to a random connected server other than the current one'''
         servers = self.get_interfaces()    # Those in connected state
         if self.default_server in servers:
             servers.remove(self.default_server)
         if servers:
-            self.switch_to_interface(random.choice(servers))
+            await self.switch_to_interface(random.choice(servers))
 
-    def switch_lagging_interface(self):
+    async def switch_lagging_interface(self):
         '''If auto_connect and lagging, switch interface'''
         if self.server_is_lagging() and self.auto_connect:
             # switch to one that has the correct header (not height)
@@ -477,9 +482,9 @@ class Network(util.DaemonThread):
             filtered = list(map(lambda x:x[0], filter(lambda x: x[1].tip_header==header, self.interfaces.items())))
             if filtered:
                 choice = random.choice(filtered)
-                self.switch_to_interface(choice)
+                await self.switch_to_interface(choice)
 
-    def switch_to_interface(self, server):
+    async def switch_to_interface(self, server):
         '''Switch to server as our interface.  If no connection exists nor
         being opened, start a thread to connect.  The actual switch will
         happen on receipt of the connection notification.  Do nothing
@@ -496,7 +501,7 @@ class Network(util.DaemonThread):
             # fixme: we don't want to close headers sub
             #self.close_interface(self.interface)
             self.interface = i
-            self.send_subscriptions()
+            await self.send_subscriptions()
             self.set_status('connected')
             self.notify('updated')
 
@@ -516,7 +521,7 @@ class Network(util.DaemonThread):
         self.recent_servers = self.recent_servers[0:20]
         self.save_recent_servers()
 
-    def process_response(self, interface, response, callbacks):
+    async def process_response(self, interface, response, callbacks):
         if self.debug:
             self.print_error("<--", response)
         error = response.get('error')
@@ -529,7 +534,7 @@ class Network(util.DaemonThread):
             interface.server_version = result
         elif method == 'blockchain.headers.subscribe':
             if error is None:
-                self.on_notify_header(interface, result)
+                await self.on_notify_header(interface, result)
         elif method == 'server.peers.subscribe':
             if error is None:
                 self.irc_servers = parse_servers(result)
@@ -553,9 +558,9 @@ class Network(util.DaemonThread):
                 self.relay_fee = int(result * COIN)
                 self.print_error("relayfee", self.relay_fee)
         elif method == 'blockchain.block.get_chunk':
-            self.on_get_chunk(interface, response)
+            await self.on_get_chunk(interface, response)
         elif method == 'blockchain.block.get_header':
-            self.on_get_header(interface, response)
+            await self.on_get_header(interface, response)
 
         for callback in callbacks:
             callback(response)
@@ -564,7 +569,7 @@ class Network(util.DaemonThread):
         """ hashable index for subscriptions and cache"""
         return str(method) + (':' + str(params[0]) if params else '')
 
-    def process_responses(self, interface):
+    async def process_responses(self, interface):
         responses = interface.get_responses()
         for request, response in responses:
             if request:
@@ -609,7 +614,7 @@ class Network(util.DaemonThread):
             if method.endswith('.subscribe'):
                 self.sub_cache[k] = response
             # Response is now in canonical form
-            self.process_response(interface, response, callbacks)
+            await self.process_response(interface, response, callbacks)
 
     def addr_to_scripthash(self, addr):
         h = bitcoin.address_to_scripthash(addr)
@@ -641,7 +646,7 @@ class Network(util.DaemonThread):
         with self.lock:
             self.pending_sends.append((messages, callback))
 
-    def process_pending_sends(self):
+    async def process_pending_sends(self):
         # Requests needs connectivity.  If we don't have an interface,
         # we cannot process them.
         if not self.interface:
@@ -667,7 +672,7 @@ class Network(util.DaemonThread):
                     util.print_error("cache hit", k)
                     callback(r)
                 else:
-                    message_id = self.queue_request(method, params)
+                    message_id = await self.queue_request(method, params)
                     self.unanswered_requests[message_id] = method, params, callback
 
     def unsubscribe(self, callback):
@@ -693,7 +698,7 @@ class Network(util.DaemonThread):
             if b.catch_up == server:
                 b.catch_up = None
 
-    def new_interface(self, server, socket):
+    async def new_interface(self, server, socket):
         # todo: get tip first, then decide which checkpoint to use.
         self.add_recent_server(server)
         interface = Interface(server, socket)
@@ -703,12 +708,12 @@ class Network(util.DaemonThread):
         interface.mode = 'default'
         interface.request = None
         self.interfaces[server] = interface
-        self.queue_request('blockchain.headers.subscribe', [], interface)
+        await self.queue_request('blockchain.headers.subscribe', [], interface)
         if server == self.default_server:
-            self.switch_to_interface(server)
+            await self.switch_to_interface(server)
         #self.notify('interfaces')
 
-    def maintain_sockets(self):
+    async def maintain_sockets(self):
         '''Socket maintenance.'''
         # Responses to connection attempts?
         while not self.socket_queue.empty():
@@ -716,7 +721,7 @@ class Network(util.DaemonThread):
             if server in self.connecting:
                 self.connecting.remove(server)
             if socket:
-                self.new_interface(server, socket)
+                await self.new_interface(server, socket)
             else:
                 self.connection_down(server)
 
@@ -727,7 +732,7 @@ class Network(util.DaemonThread):
                 self.connection_down(interface.server)
             elif interface.ping_required():
                 params = [ELECTRUM_VERSION, PROTOCOL_VERSION]
-                self.queue_request('server.version', params, interface)
+                await self.queue_request('server.version', params, interface)
 
         now = time.time()
         # nodes
@@ -742,25 +747,25 @@ class Network(util.DaemonThread):
         if not self.is_connected():
             if self.auto_connect:
                 if not self.is_connecting():
-                    self.switch_to_random_interface()
+                    await self.switch_to_random_interface()
             else:
                 if self.default_server in self.disconnected_servers:
                     if now - self.server_retry_time > SERVER_RETRY_INTERVAL:
                         self.disconnected_servers.remove(self.default_server)
                         self.server_retry_time = now
                 else:
-                    self.switch_to_interface(self.default_server)
+                    await self.switch_to_interface(self.default_server)
         else:
             if self.config.is_fee_estimates_update_required():
-                self.request_fee_estimates()
+                await self.request_fee_estimates()
 
-    def request_chunk(self, interface, idx):
+    async def request_chunk(self, interface, idx):
         interface.print_error("requesting chunk %d" % idx)
-        self.queue_request('blockchain.block.get_chunk', [idx], interface)
+        await self.queue_request('blockchain.block.get_chunk', [idx], interface)
         interface.request = idx
         interface.req_time = time.time()
 
-    def on_get_chunk(self, interface, response):
+    async def on_get_chunk(self, interface, response):
         '''Handle receiving a chunk of block headers'''
         error = response.get('error')
         result = response.get('result')
@@ -778,7 +783,7 @@ class Network(util.DaemonThread):
             self.connection_down(interface.server)
             return
         if interface.blockchain.height() < interface.tip:
-            self.request_chunk(interface, index+1)
+            await self.request_chunk(interface, index+1)
         else:
             interface.request = None
             interface.mode = 'default'
@@ -786,13 +791,13 @@ class Network(util.DaemonThread):
             interface.blockchain.catch_up = None
         self.notify('updated')
 
-    def request_header(self, interface, height):
+    async def request_header(self, interface, height):
         #interface.print_error("requesting header %d" % height)
-        self.queue_request('blockchain.block.get_header', [height], interface)
+        await self.queue_request('blockchain.block.get_header', [height], interface)
         interface.request = height
         interface.req_time = time.time()
 
-    def on_get_header(self, interface, response):
+    async def on_get_header(self, interface, response):
         '''Handle receiving a single block header'''
         header = response.get('result')
         if not header:
@@ -892,7 +897,7 @@ class Network(util.DaemonThread):
                 # exit catch_up state
                 interface.print_error('catch up done', interface.blockchain.height())
                 interface.blockchain.catch_up = None
-                self.switch_lagging_interface()
+                await self.switch_lagging_interface()
                 self.notify('updated')
 
         else:
@@ -900,9 +905,9 @@ class Network(util.DaemonThread):
         # If not finished, get the next header
         if next_height:
             if interface.mode == 'catch_up' and interface.tip > next_height + 50:
-                self.request_chunk(interface, next_height // 2016)
+                await self.request_chunk(interface, next_height // 2016)
             else:
-                self.request_header(interface, next_height)
+                await self.request_header(interface, next_height)
         else:
             interface.mode = 'default'
             interface.request = None
@@ -917,7 +922,7 @@ class Network(util.DaemonThread):
                 self.connection_down(interface.server)
                 continue
 
-    def wait_on_sockets(self):
+    async def wait_on_sockets(self):
         # Python docs say Windows doesn't like empty selects.
         # Sleep to prevent busy looping
         if not self.interfaces:
@@ -937,7 +942,7 @@ class Network(util.DaemonThread):
         for interface in wout:
             interface.send_requests()
         for interface in rout:
-            self.process_responses(interface)
+            await self.process_responses(interface)
 
     def init_headers_file(self):
         b = self.blockchains[0]
@@ -965,19 +970,29 @@ class Network(util.DaemonThread):
         t.start()
 
     def run(self):
+        loop = asyncio.new_event_loop()
+        future = asyncio.Future(loop = loop)
+        asyncio.ensure_future(self.run_async(future), loop = loop)
+        loop.run_until_complete(future)
+        loop.close()
+        future.exception()
+        print(future.result())
+
+    async def run_async(self, future):
         self.init_headers_file()
         while self.is_running() and self.downloading_headers:
             time.sleep(1)
         while self.is_running():
-            self.maintain_sockets()
-            self.wait_on_sockets()
+            await self.maintain_sockets()
+            await self.wait_on_sockets()
             self.maintain_requests()
             self.run_jobs()    # Synchronizer and Verifier
-            self.process_pending_sends()
+            await self.process_pending_sends()
         self.stop_network()
         self.on_stop()
+        future.set_result("Done")
 
-    def on_notify_header(self, interface, header):
+    async def on_notify_header(self, interface, header):
         height = header.get('block_height')
         if not height:
             return
@@ -988,7 +1003,7 @@ class Network(util.DaemonThread):
         b = blockchain.check_header(header)
         if b:
             interface.blockchain = b
-            self.switch_lagging_interface()
+            await self.switch_lagging_interface()
             self.notify('updated')
             self.notify('interfaces')
             return
@@ -996,7 +1011,7 @@ class Network(util.DaemonThread):
         if b:
             interface.blockchain = b
             b.save_header(header)
-            self.switch_lagging_interface()
+            await self.switch_lagging_interface()
             self.notify('updated')
             self.notify('interfaces')
             return
@@ -1005,14 +1020,14 @@ class Network(util.DaemonThread):
             interface.mode = 'backward'
             interface.bad = height
             interface.bad_header = header
-            self.request_header(interface, min(tip, height - 1))
+            await self.request_header(interface, min(tip, height - 1))
         else:
             chain = self.blockchains[0]
             if chain.catch_up is None:
                 chain.catch_up = interface
                 interface.mode = 'catch_up'
                 interface.blockchain = chain
-                self.request_header(interface, 0)
+                await self.request_header(interface, 0)
 
     def blockchain(self):
         if self.interface and self.interface.blockchain is not None:
@@ -1027,23 +1042,28 @@ class Network(util.DaemonThread):
                 out[k] = r
         return out
 
+    # this is called from the Qt thread
     def follow_chain(self, index):
+        went_in = False
         blockchain = self.blockchains.get(index)
         if blockchain:
             self.blockchain_index = index
             self.config.set_key('blockchain_index', index)
             for i in self.interfaces.values():
                 if i.blockchain == blockchain:
-                    self.switch_to_interface(i.server)
+                    asyncio.ensure_future(self.switch_to_interface(i.server))
                     break
         else:
             raise BaseException('blockchain not found', index)
 
-        if self.interface:
-            server = self.interface.server
-            host, port, protocol, proxy, auto_connect = self.get_parameters()
-            host, port, protocol = server.split(':')
-            self.set_parameters(host, port, protocol, proxy, auto_connect)
+        # commented out on migration to asyncio. not clear if it
+        # relies on the coroutine to be done:
+
+        #if self.interface:
+        #    server = self.interface.server
+        #    host, port, protocol, proxy, auto_connect = self.get_parameters()
+        #    host, port, protocol = server.split(':')
+        #    self.set_parameters(host, port, protocol, proxy, auto_connect)
 
     def get_local_height(self):
         return self.blockchain().height()
