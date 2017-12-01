@@ -183,7 +183,6 @@ class Network(util.DaemonThread):
             self.default_server = pick_random_server()
 
         self.lock = threading.Lock()
-        self.pending_sends = []
         self.message_id = 0
         self.debug = False
         self.irc_servers = {} # returned by interface (list from irc)
@@ -647,8 +646,9 @@ class Network(util.DaemonThread):
     def send(self, messages, callback):
         '''Messages is a list of (method, params) tuples'''
         messages = list(messages)
-        with self.lock:
-            self.pending_sends.append((messages, callback))
+        async def job():
+            await self.pending_sends.put((messages, callback))
+        asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
 
     async def process_pending_sends(self):
         # Requests needs connectivity.  If we don't have an interface,
@@ -656,28 +656,24 @@ class Network(util.DaemonThread):
         if not self.interface:
             return
 
-        with self.lock:
-            sends = self.pending_sends
-            self.pending_sends = []
-
-        for messages, callback in sends:
-            for method, params in messages:
-                r = None
-                if method.endswith('.subscribe'):
-                    k = self.get_index(method, params)
-                    # add callback to list
-                    l = self.subscriptions.get(k, [])
-                    if callback not in l:
-                        l.append(callback)
-                    self.subscriptions[k] = l
-                    # check cached response for subscriptions
-                    r = self.sub_cache.get(k)
-                if r is not None:
-                    util.print_error("cache hit", k)
-                    callback(r)
-                else:
-                    message_id = await self.queue_request(method, params)
-                    self.unanswered_requests[message_id] = method, params, callback
+        messages, callback = await self.pending_sends.get()
+        for method, params in messages:
+            r = None
+            if method.endswith('.subscribe'):
+                k = self.get_index(method, params)
+                # add callback to list
+                l = self.subscriptions.get(k, [])
+                if callback not in l:
+                    l.append(callback)
+                self.subscriptions[k] = l
+                # check cached response for subscriptions
+                r = self.sub_cache.get(k)
+            if r is not None:
+                util.print_error("cache hit", k)
+                callback(r)
+            else:
+                message_id = await self.queue_request(method, params)
+                self.unanswered_requests[message_id] = method, params, callback
 
     def unsubscribe(self, callback):
         '''Unsubscribe a callback to free object references to enable GC.'''
@@ -939,6 +935,15 @@ class Network(util.DaemonThread):
                     traceback.print_exc()
             yield asyncio.ensure_future(job(), loop=self.loop)
 
+    def make_process_pending_sends_job(self):
+        async def job():
+            try:
+                while True:
+                    await self.process_pending_sends()
+            except Exception as e:
+                traceback.print_exc()
+        return asyncio.ensure_future(job(), loop=self.loop)
+
     def init_headers_file(self):
         b = self.blockchains[0]
         if b.get_hash(0) == bitcoin.NetworkConstants.GENESIS:
@@ -970,14 +975,17 @@ class Network(util.DaemonThread):
                                      deserialize_proxy(self.config.get('proxy')))
             self.send_requests_jobs = list(self.make_send_requests_jobs())
             self.process_responses_jobs = list(self.make_process_responses_jobs())
+            self.process_pending_sends_job = self.make_process_pending_sends_job()
             print("made jobs")
             future.set_result("all jobs started")
         except Exception as e:
             future.set_exception(e)
 
+
     def run(self):
         print("run called")
         self.loop = asyncio.new_event_loop()
+        self.pending_sends = asyncio.Queue(loop=self.loop)
 
         if not self.network_job:
             future = asyncio.Future(loop=self.loop)
@@ -1000,10 +1008,9 @@ class Network(util.DaemonThread):
             while self.is_running() and self.downloading_headers:
                 time.sleep(1)
             while self.is_running():
-                await asyncio.sleep(1)
+                #await asyncio.sleep(1) #this fixes everything
                 await self.maintain_requests()
                 self.run_jobs()    # Synchronizer and Verifier
-                await self.process_pending_sends()
             await self.stop_network()
             self.on_stop()
             future.set_result("Done")
