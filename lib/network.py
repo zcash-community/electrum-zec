@@ -619,6 +619,8 @@ class Network(util.DaemonThread):
                 self.sub_cache[k] = response
             # Response is now in canonical form
             await self.process_response(interface, response, callbacks)
+            await self.run_coroutines()    # Synchronizer and Verifier
+
 
     def addr_to_scripthash(self, addr):
         h = bitcoin.address_to_scripthash(addr)
@@ -649,8 +651,11 @@ class Network(util.DaemonThread):
         messages = list(messages)
         async def job(future):
             await self.pending_sends.put((messages, callback))
-            future.set_result("put pending send")
-        self.run_on_start.extend([job])
+            if future: future.set_result("put pending send")
+        if self.loop.is_closed():
+            self.run_on_start.extend([job])
+        else:
+            asyncio.run_coroutine_threadsafe(job(None), loop=self.loop)
 
     async def process_pending_sends(self):
         # Requests needs connectivity.  If we don't have an interface,
@@ -1014,7 +1019,10 @@ class Network(util.DaemonThread):
             self.init_headers_file()
             while self.is_running() and self.downloading_headers:
                 time.sleep(1)
-            await self.run_coroutines()    # Synchronizer and Verifier
+            while self.is_running():
+                await asyncio.sleep(1)
+                #await asyncio.sleep(1) # this fixes everything
+                #await self.maintain_requests()
             #while self.is_running():
             #    #await asyncio.sleep(1) #this fixes everything
             #    await self.maintain_requests()

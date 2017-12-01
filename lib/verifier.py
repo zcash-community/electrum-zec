@@ -20,11 +20,11 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-from .util import ThreadJob
+from .util import CoroutineJob
 from .bitcoin import *
 
 
-class SPV(ThreadJob):
+class SPV(CoroutineJob):
     """ Simple Payment Verification """
 
     def __init__(self, network, wallet):
@@ -35,7 +35,7 @@ class SPV(ThreadJob):
         # requested, and the merkle root once it has been verified
         self.merkle_roots = {}
 
-    def run(self):
+    async def run(self):
         lh = self.network.get_local_height()
         unverified = self.wallet.get_unverified_txs()
         for tx_hash, tx_height in unverified.items():

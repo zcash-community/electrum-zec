@@ -27,10 +27,10 @@ import hashlib
 
 # from .bitcoin import Hash, hash_encode
 from .transaction import Transaction
-from .util import ThreadJob, bh2u
+from .util import CoroutineJob, bh2u
 
 
-class Synchronizer(ThreadJob):
+class Synchronizer(CoroutineJob):
     '''The synchronizer keeps the wallet up-to-date with its set of
     addresses and their transactions.  It subscribes over the network
     to wallet addresses, gets the wallet to generate new addresses
@@ -178,7 +178,7 @@ class Synchronizer(ThreadJob):
             self.print_error("missing tx", self.requested_tx)
         self.subscribe_to_addresses(set(self.wallet.get_addresses()))
 
-    def run(self):
+    async def run(self):
         '''Called from the network proxy thread main loop.'''
         # 1. Create new addresses
         self.wallet.synchronize()
