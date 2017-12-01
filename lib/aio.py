@@ -60,26 +60,31 @@ class SocketPipe:
         self.hostname_port = "148.251.87.112:51002"
         self.reader = self.writer = None
         self.loop = loop
-    async def _make_read_write(self):
-        host, port = self.hostname_port.split(":")[0], int(self.hostname_port.split(":")[1])
-        print(host, port, self.loop)
-        reader, writer = await asyncio.open_connection(host, port, loop=self.loop)
-        print("opened connection")
-        self.reader = reader
-        self.writer = writer
+        self.lock = asyncio.Lock(loop=loop)
+    async def _get_read_write(self):
+        async with self.lock:
+            if self.reader is not None and self.writer is not None:
+                return self.reader, self.writer
+            print("making reader and writer")
+            host, port = self.hostname_port.split(":")[0], int(self.hostname_port.split(":")[1])
+            print(host, port, self.loop)
+            reader, writer = await asyncio.open_connection(host, port, loop=self.loop)
+            print("opened connection")
+            self.reader = reader
+            self.writer = writer
+            return self.reader, self.writer
     async def send_all(self, list_of_requests):
-        print("making reader and writer")
-        if not self.writer: await self._make_read_write()
+        _, w = await self._get_read_write()
         print(len(list_of_requests))
         for i in list_of_requests:
-            print("sending", i)
-            self.writer.write(json.dumps(i).encode("ascii") + b"\n")
-        await self.writer.drain()
+            w.write(json.dumps(i).encode("ascii") + b"\n")
+        await w.drain()
+        print("sent and drained", list_of_requests)
     async def close(self):
-        assert self.writer
-        self.writer.close()
+        _, w = await self._get_read_write()
+        w.close()
     async def get(self):
-        if not self.reader: await self._make_read_write()
-        return await read_reply(self.reader)
+        r, w = await self._get_read_write()
+        return await read_reply(r)
     def idle_time():
         return 0

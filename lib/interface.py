@@ -93,9 +93,10 @@ class Interface(util.PrintError):
         try:
             await self.pipe.send_all([make_dict(*request)])
         except Exception as e:
+            traceback.print_exc()
             self.print_error("socket error:", e)
-            await self.unsent_requests.put((prio, r))
-            sys.exit(1)
+            sys.exit(1) # TODO
+            await self.unsent_requests.put((prio, request))
             #return False
         if self.debug:
             self.print_error("-->", request)
