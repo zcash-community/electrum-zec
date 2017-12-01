@@ -46,7 +46,7 @@ class Interface(util.PrintError):
     """The Interface class handles a socket connected to a single remote
     electrum server.  It's exposed API is:
 
-    - Member functions close(), fileno(), get_responses(), has_timed_out(),
+    - Member functions close(), fileno(), get_response(), has_timed_out(),
       ping_required(), queue_request(), send_request()
     - Member variable server.
     """
@@ -121,7 +121,7 @@ class Interface(util.PrintError):
 
         return False
 
-    async def get_responses(self):
+    async def get_response(self):
         '''Call if there is data available on the socket.  Returns a list of
         (request, response) pairs.  Notifications are singleton
         unsolicited responses presumably as a result of prior
@@ -130,28 +130,26 @@ class Interface(util.PrintError):
         corresponding request.  If the connection was closed remotely
         or the remote server is misbehaving, a (None, None) will appear.
         '''
-        while True:
-            response = await self.pipe.get()
-            if not type(response) is dict:
-                print("response type not dict!", response)
-                yield (None, None)
-                if response is None:
-                    self.closed_remotely = True
-                    self.print_error("connection closed remotely")
-                return
-            if self.debug:
-                self.print_error("<--", response)
-            wire_id = response.get('id', None)
-            if wire_id is None:  # Notification
-                print("notification")
-                yield (None, response)
+        response = await self.pipe.get()
+        if not type(response) is dict:
+            print("response type not dict!", response)
+            if response is None:
+                self.closed_remotely = True
+                self.print_error("connection closed remotely")
+            return None, None
+        if self.debug:
+            self.print_error("<--", response)
+        wire_id = response.get('id', None)
+        if wire_id is None:  # Notification
+            print("notification")
+            return None, response
+        else:
+            request = self.unanswered_requests.pop(wire_id, None)
+            if request:
+                return request, response
             else:
-                request = self.unanswered_requests.pop(wire_id, None)
-                if request:
-                    yield (request, response)
-                else:
-                    self.print_error("unknown wire ID", wire_id)
-                    yield (None, None) # Signal
+                self.print_error("unknown wire ID", wire_id)
+                return None, None # Signal
 
 def check_cert(host, cert):
     try:
