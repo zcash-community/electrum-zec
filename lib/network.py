@@ -922,7 +922,6 @@ class Network(util.DaemonThread):
             async def job():
                 try:
                     while True:
-                        print("sending request")
                         await interface.send_request()
                 except Exception as e:
                     traceback.print_exc()

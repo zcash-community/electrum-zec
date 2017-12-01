@@ -9,13 +9,12 @@ async def read_reply(reader):
     obj = b""
     while True:
       obj += await reader.read(1)
-      print("obj now", obj)
       try:
         obj = json.loads(obj.decode("ascii"))["result"]
       except ValueError:
         continue
       else:
-        print("got", obj)
+        print("got reply", obj)
         return obj
 
 def rpc_request(method, *params):
@@ -75,11 +74,9 @@ class SocketPipe:
             return self.reader, self.writer
     async def send_all(self, list_of_requests):
         _, w = await self._get_read_write()
-        print(len(list_of_requests))
         for i in list_of_requests:
             w.write(json.dumps(i).encode("ascii") + b"\n")
         await w.drain()
-        print("sent and drained", list_of_requests)
     async def close(self):
         _, w = await self._get_read_write()
         w.close()

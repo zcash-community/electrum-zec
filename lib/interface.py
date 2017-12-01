@@ -89,7 +89,6 @@ class Interface(util.PrintError):
         make_dict = lambda m, p, i: {'method': m, 'params': p, 'id': i}
         n = self.num_requests()
         prio, request = await self.unsent_requests.get()
-        print("got queue item", request)
         try:
             await self.pipe.send_all([make_dict(*request)])
         except Exception as e:
