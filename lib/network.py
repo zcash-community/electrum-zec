@@ -999,6 +999,7 @@ class Network(util.DaemonThread):
             while self.is_running() and self.downloading_headers:
                 time.sleep(1)
             while self.is_running():
+                await asyncio.sleep(1)
                 await self.maintain_requests()
                 self.run_jobs()    # Synchronizer and Verifier
                 await self.process_pending_sends()
