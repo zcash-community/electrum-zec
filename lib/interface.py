@@ -133,8 +133,8 @@ class Interface(util.PrintError):
         responses = []
         while True:
             response = await self.pipe.get()
-            print("pipe get returned")
             if not type(response) is dict:
+                print("response type not dict!", response)
                 responses.append((None, None))
                 if response is None:
                     self.closed_remotely = True
@@ -144,6 +144,7 @@ class Interface(util.PrintError):
                 self.print_error("<--", response)
             wire_id = response.get('id', None)
             if wire_id is None:  # Notification
+                print("notification")
                 responses.append((None, response))
             else:
                 request = self.unanswered_requests.pop(wire_id, None)

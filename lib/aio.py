@@ -5,12 +5,11 @@ from . import bitcoin
 wallet = None
 
 async def read_reply(reader):
-    print("read reply called")
     obj = b""
     while True:
       obj += await reader.read(1)
       try:
-        obj = json.loads(obj.decode("ascii"))["result"]
+        obj = json.loads(obj.decode("ascii"))
       except ValueError:
         continue
       else:
@@ -54,9 +53,7 @@ def asyncio_test(thiswallet):
 
 class SocketPipe:
     def __init__(self, hostname_port, loop):
-        print("ignoring " + hostname_port)
-        #self.hostname_port = hostname_port
-        self.hostname_port = "148.251.87.112:51002"
+        self.hostname_port = hostname_port
         self.reader = self.writer = None
         self.loop = loop
         self.lock = asyncio.Lock(loop=loop)

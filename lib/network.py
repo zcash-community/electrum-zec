@@ -691,6 +691,7 @@ class Network(util.DaemonThread):
     async def connection_down(self, server):
         '''A connection to server either went down, or was never made.
         We distinguish by whether it is in self.interfaces.'''
+        print("connection down")
         self.disconnected_servers.add(server)
         if server == self.default_server:
             self.set_status('disconnected')
@@ -706,7 +707,7 @@ class Network(util.DaemonThread):
         self.add_recent_server(server)
 
         host, port, protocol, proxy, auto_connect = self.get_parameters()
-        if protocol == "s": print("Interface cannot do SSL yet!") # TODO
+        assert protocol == "t", "Interface cannot do SSL yet!" # TODO
 
         interface = Interface(server, "{}:{}".format(host,port), self.loop)
         interface.blockchain = None
