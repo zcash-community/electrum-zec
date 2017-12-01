@@ -969,7 +969,7 @@ class Abstract_Wallet(PrintError):
             self.prepare_for_verifier()
             self.verifier = SPV(self.network, self)
             self.synchronizer = Synchronizer(self, network)
-            network.add_jobs([self.verifier, self.synchronizer])
+            network.add_coroutines([self.verifier, self.synchronizer])
         else:
             self.verifier = None
             self.synchronizer = None

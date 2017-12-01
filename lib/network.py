@@ -162,6 +162,7 @@ class Network(util.DaemonThread):
     """
 
     def __init__(self, config=None):
+        self.run_on_start = []
         if config is None:
             config = {}  # Do not use mutables as default values!
         util.DaemonThread.__init__(self)
@@ -646,9 +647,10 @@ class Network(util.DaemonThread):
     def send(self, messages, callback):
         '''Messages is a list of (method, params) tuples'''
         messages = list(messages)
-        async def job():
+        async def job(future):
             await self.pending_sends.put((messages, callback))
-        asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
+            future.set_result("put pending send")
+        self.run_on_start.extend([job])
 
     async def process_pending_sends(self):
         # Requests needs connectivity.  If we don't have an interface,
@@ -985,6 +987,11 @@ class Network(util.DaemonThread):
     def run(self):
         print("run called")
         self.loop = asyncio.new_event_loop()
+        for i in self.run_on_start:
+            asyncio.ensure_future(i(future), loop=self.loop)
+            loop.run_until_complete(future)
+            future.exception()
+            print("ran on start", future.result())
         self.pending_sends = asyncio.Queue(loop=self.loop)
 
         if not self.network_job:
@@ -993,7 +1000,7 @@ class Network(util.DaemonThread):
             self.loop.run_until_complete(future)
             print("unblocked")
             future.exception()
-            print(future.result())
+            print("made network job", future.result())
 
         future = asyncio.Future(loop=self.loop)
         asyncio.ensure_future(self.run_async(future), loop=self.loop)
@@ -1007,10 +1014,10 @@ class Network(util.DaemonThread):
             self.init_headers_file()
             while self.is_running() and self.downloading_headers:
                 time.sleep(1)
-            while self.is_running():
-                #await asyncio.sleep(1) #this fixes everything
-                await self.maintain_requests()
-                self.run_jobs()    # Synchronizer and Verifier
+            await self.run_coroutines()    # Synchronizer and Verifier
+            #while self.is_running():
+            #    #await asyncio.sleep(1) #this fixes everything
+            #    await self.maintain_requests()
             await self.stop_network()
             self.on_stop()
             future.set_result("Done")
