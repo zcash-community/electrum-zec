@@ -5,13 +5,18 @@ from . import bitcoin
 wallet = None
 
 async def read_reply(reader):
+    print("read reply called")
     obj = b""
     while True:
       obj += await reader.read(1)
+      print("obj now", obj)
       try:
-        return json.loads(obj.decode("ascii"))["result"]
+        obj = json.loads(obj.decode("ascii"))["result"]
       except ValueError:
         continue
+      else:
+        print("got", obj)
+        return obj
 
 def rpc_request(method, *params):
     return json.dumps({"jsonrpc": "2.0", "id": 1, "params": params, "method": method}).encode("ascii") + b"\n"
@@ -56,12 +61,18 @@ class SocketPipe:
         self.reader = self.writer = None
         self.loop = loop
     async def _make_read_write(self):
-        reader, writer = await asyncio.open_connection(self.hostname_port.split(":")[0], int(self.hostname_port.split(":")[1]), loop=self.loop)
+        host, port = self.hostname_port.split(":")[0], int(self.hostname_port.split(":")[1])
+        print(host, port, self.loop)
+        reader, writer = await asyncio.open_connection(host, port, loop=self.loop)
+        print("opened connection")
         self.reader = reader
         self.writer = writer
     async def send_all(self, list_of_requests):
+        print("making reader and writer")
         if not self.writer: await self._make_read_write()
+        print(len(list_of_requests))
         for i in list_of_requests:
+            print("sending", i)
             self.writer.write(json.dumps(i).encode("ascii") + b"\n")
         await self.writer.drain()
     async def close(self):

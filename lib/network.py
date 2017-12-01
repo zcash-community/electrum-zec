@@ -573,8 +573,8 @@ class Network(util.DaemonThread):
         return str(method) + (':' + str(params[0]) if params else '')
 
     async def process_responses(self, interface):
-        print("processing responses")
         for request, response in await interface.get_responses():
+            print("processing response", response)
             if request:
                 method, params, message_id = request
                 k = self.get_index(method, params)

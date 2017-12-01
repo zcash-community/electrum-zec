@@ -59,7 +59,7 @@ class Interface(util.PrintError):
         self.pipe = aio.SocketPipe(hostname_port, loop)
         # Dump network messages.  Set at runtime from the console.
         self.debug = False
-        self.unsent_requests = asyncio.Queue(loop=loop)
+        self.unsent_requests = asyncio.PriorityQueue(loop=loop)
         self.unanswered_requests = {}
         # Set last ping to zero to ensure immediate ping
         self.last_request = time.time()
@@ -76,9 +76,8 @@ class Interface(util.PrintError):
         '''Queue a request, later to be send with send_requests when the
         socket is available for writing.
         '''
-        print("queue_request called")
         self.request_time = time.time()
-        await self.unsent_requests.put(args)
+        await self.unsent_requests.put((self.request_time, args))
 
     def num_requests(self):
         '''Keep unanswered requests below 100'''
@@ -89,17 +88,18 @@ class Interface(util.PrintError):
         '''Sends queued requests.  Returns False on failure.'''
         make_dict = lambda m, p, i: {'method': m, 'params': p, 'id': i}
         n = self.num_requests()
-        r = await self.unsent_requests.get()
+        prio, request = await self.unsent_requests.get()
+        print("got queue item", request)
         try:
-            await self.pipe.send_all([make_dict(*r)])
+            await self.pipe.send_all([make_dict(*request)])
         except Exception as e:
             self.print_error("socket error:", e)
-            await self.unsent_requests.put(r)
-            return False
-        for request in wire_requests:
-            if self.debug:
-                self.print_error("-->", request)
-            self.unanswered_requests[request[2]] = request
+            await self.unsent_requests.put((prio, r))
+            sys.exit(1)
+            #return False
+        if self.debug:
+            self.print_error("-->", request)
+        self.unanswered_requests[request[2]] = request
         return True
 
     def ping_required(self):
@@ -133,6 +133,7 @@ class Interface(util.PrintError):
         responses = []
         while True:
             response = await self.pipe.get()
+            print("pipe get returned")
             if not type(response) is dict:
                 responses.append((None, None))
                 if response is None:
