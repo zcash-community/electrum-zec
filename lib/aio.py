@@ -13,7 +13,6 @@ async def read_reply(reader):
       except ValueError:
         continue
       else:
-        print("got reply", obj)
         return obj
 
 def rpc_request(method, *params):

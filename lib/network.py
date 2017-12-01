@@ -221,6 +221,7 @@ class Network(util.DaemonThread):
         self.network_job = None
         self.send_requests_jobs = None
         self.process_responses_jobs = None
+        self.proxy = None
 
     def register_callback(self, callback, events):
         with self.lock:
@@ -573,8 +574,7 @@ class Network(util.DaemonThread):
         return str(method) + (':' + str(params[0]) if params else '')
 
     async def process_responses(self, interface):
-        for request, response in await interface.get_responses():
-            print("processing response", response)
+        async for request, response in interface.get_responses():
             if request:
                 method, params, message_id = request
                 k = self.get_index(method, params)
@@ -931,9 +931,9 @@ class Network(util.DaemonThread):
     def make_process_responses_jobs(self):
         for interface in self.interfaces.values():
             async def job():
+                print("starting process responses job")
                 try:
-                    while True:
-                        await self.process_responses(interface)
+                    await self.process_responses(interface)
                 except Exception as e:
                     traceback.print_exc()
             yield asyncio.ensure_future(job(), loop=self.loop)

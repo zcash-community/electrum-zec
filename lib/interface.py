@@ -130,33 +130,28 @@ class Interface(util.PrintError):
         corresponding request.  If the connection was closed remotely
         or the remote server is misbehaving, a (None, None) will appear.
         '''
-        responses = []
         while True:
             response = await self.pipe.get()
             if not type(response) is dict:
                 print("response type not dict!", response)
-                responses.append((None, None))
+                yield (None, None)
                 if response is None:
                     self.closed_remotely = True
                     self.print_error("connection closed remotely")
-                break
+                return
             if self.debug:
                 self.print_error("<--", response)
             wire_id = response.get('id', None)
             if wire_id is None:  # Notification
                 print("notification")
-                responses.append((None, response))
+                yield (None, response)
             else:
                 request = self.unanswered_requests.pop(wire_id, None)
                 if request:
-                    responses.append((request, response))
+                    yield (request, response)
                 else:
                     self.print_error("unknown wire ID", wire_id)
-                    responses.append((None, None)) # Signal
-                    break
-
-        return responses
-
+                    yield (None, None) # Signal
 
 def check_cert(host, cert):
     try:
