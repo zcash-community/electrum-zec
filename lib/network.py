@@ -923,8 +923,8 @@ class Network(util.DaemonThread):
             try:
                 while True:
                     await interface.send_request()
-            except Exception as e:
-                traceback.print_exc()
+            except OSError:
+                await self.connection_down(interface.server)
         for interface in self.interfaces.values():
             yield asyncio.ensure_future(job(interface), loop=self.loop)
 
@@ -932,8 +932,8 @@ class Network(util.DaemonThread):
         async def job(interface):
             try:
                 await self.process_responses(interface)
-            except Exception as e:
-                traceback.print_exc()
+            except OSError:
+                await self.connection_down(interface.server)
         for interface in self.interfaces.values():
             yield asyncio.ensure_future(job(interface), loop=self.loop)
 

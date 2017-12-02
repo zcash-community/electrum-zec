@@ -88,14 +88,14 @@ class Interface(util.PrintError):
         make_dict = lambda m, p, i: {'method': m, 'params': p, 'id': i}
         n = self.num_requests()
         prio, request = await self.unsent_requests.get()
-        try:
-            await self.pipe.send_all([make_dict(*request)])
-        except Exception as e:
-            traceback.print_exc()
-            self.print_error("socket error:", e)
-            sys.exit(1) # TODO
-            await self.unsent_requests.put((prio, request))
-            #return False
+        #try:
+        await self.pipe.send_all([make_dict(*request)])
+        #except Exception as e:
+        #    traceback.print_exc()
+        #    self.print_error("socket error:", e)
+        #     sys.exit(1) # TODO
+        #    await self.unsent_requests.put((prio, request))
+        #    #return False
         if self.debug:
             self.print_error("-->", request)
         self.unanswered_requests[request[2]] = request
