@@ -63,7 +63,6 @@ class SocketPipe:
         async with self.lock:
             if self.reader is not None and self.writer is not None:
                 return self.reader, self.writer
-            print(self.host, self.port, self.loop)
             self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop)
             return self.reader, self.writer
 
@@ -73,9 +72,9 @@ class SocketPipe:
             w.write(json.dumps(i).encode("ascii") + b"\n")
         await w.drain()
 
-    async def close(self):
-        _, w = await self._get_read_write()
-        w.close()
+    def close(self):
+        if self.writer:
+            self.writer.close()
 
     async def get(self):
         r, w = await self._get_read_write()

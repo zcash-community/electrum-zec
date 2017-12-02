@@ -68,8 +68,8 @@ class Interface(util.PrintError):
     def diagnostic_name(self):
         return self.host
 
-    async def close(self):
-        await self.pipe.close()
+    def close(self):
+        self.pipe.close()
 
     async def queue_request(self, *args):  # method, params, _id
         '''Queue a request, later to be send with send_requests when the

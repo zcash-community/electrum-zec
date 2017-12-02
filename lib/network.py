@@ -427,9 +427,9 @@ class Network(util.DaemonThread):
     async def stop_network(self):
         self.print_error("stopping network")
         for interface in list(self.interfaces.values()):
-            await self.close_interface(interface)
+            self.close_interface(interface)
         if self.interface:
-            await self.close_interface(self.interface)
+            self.close_interface(self.interface)
         assert self.interface is None
         assert not self.interfaces
         self.connecting = set()
@@ -509,13 +509,14 @@ class Network(util.DaemonThread):
             self.set_status('connected')
             self.notify('updated')
 
-    async def close_interface(self, interface):
+    def close_interface(self, interface):
+        self.print_error('closing connection', interface.server)
         if interface:
             if interface.server in self.interfaces:
                 self.interfaces.pop(interface.server)
             if interface.server == self.default_server:
                 self.interface = None
-            await interface.close()
+            interface.close()
 
     def add_recent_server(self, server):
         # list is ordered
@@ -692,15 +693,15 @@ class Network(util.DaemonThread):
                 if callback in v:
                     v.remove(callback)
 
-    async def connection_down(self, server):
+    def connection_down(self, server):
         '''A connection to server either went down, or was never made.
         We distinguish by whether it is in self.interfaces.'''
-        print("connection down")
+        self.print_error("connection down", server)
         self.disconnected_servers.add(server)
         if server == self.default_server:
             self.set_status('disconnected')
         if server in self.interfaces:
-            await self.close_interface(self.interfaces[server])
+            self.close_interface(self.interfaces[server])
             self.notify('interfaces')
         for b in self.blockchains.values():
             if b.catch_up == server:
@@ -1016,11 +1017,7 @@ class Network(util.DaemonThread):
                 time.sleep(1)
             while self.is_running():
                 await asyncio.sleep(1)
-                #await asyncio.sleep(1) # this fixes everything
                 #await self.maintain_requests()
-            #while self.is_running():
-            #    #await asyncio.sleep(1) #this fixes everything
-            #    await self.maintain_requests()
             await self.stop_network()
             self.on_stop()
             future.set_result("Done")
