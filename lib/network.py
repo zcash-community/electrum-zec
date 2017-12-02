@@ -709,11 +709,7 @@ class Network(util.DaemonThread):
     async def new_interface(self, server):
         # todo: get tip first, then decide which checkpoint to use.
         self.add_recent_server(server)
-
-        host, port, protocol, proxy, auto_connect = self.get_parameters()
-        assert protocol == "t", "Interface cannot do SSL yet!" # TODO
-
-        interface = Interface(server, "{}:{}".format(host,port), self.loop)
+        interface = Interface(server, self.loop)
         interface.blockchain = None
         interface.tip_header = None
         interface.tip = 0

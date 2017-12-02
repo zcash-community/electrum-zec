@@ -7,13 +7,13 @@ wallet = None
 async def read_reply(reader):
     obj = b""
     while True:
-      obj += await reader.read(1)
-      try:
-        obj = json.loads(obj.decode("ascii"))
-      except ValueError:
-        continue
-      else:
-        return obj
+        obj += await reader.read(1)
+        try:
+            obj = json.loads(obj.decode("ascii"))
+        except ValueError:
+            continue
+        else:
+            return obj
 
 def rpc_request(method, *params):
     return json.dumps({"jsonrpc": "2.0", "id": 1, "params": params, "method": method}).encode("ascii") + b"\n"
@@ -51,33 +51,35 @@ def asyncio_test(thiswallet):
     return future.result()
 
 class SocketPipe:
-    def __init__(self, hostname_port, loop):
-        self.hostname_port = hostname_port
+
+    def __init__(self, host, port, loop):
+        self.host = host
+        self.port = int(port)
         self.reader = self.writer = None
         self.loop = loop
         self.lock = asyncio.Lock(loop=loop)
+
     async def _get_read_write(self):
         async with self.lock:
             if self.reader is not None and self.writer is not None:
                 return self.reader, self.writer
-            print("making reader and writer")
-            host, port = self.hostname_port.split(":")[0], int(self.hostname_port.split(":")[1])
-            print(host, port, self.loop)
-            reader, writer = await asyncio.open_connection(host, port, loop=self.loop)
-            print("opened connection")
-            self.reader = reader
-            self.writer = writer
+            print(self.host, self.port, self.loop)
+            self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop)
             return self.reader, self.writer
+
     async def send_all(self, list_of_requests):
         _, w = await self._get_read_write()
         for i in list_of_requests:
             w.write(json.dumps(i).encode("ascii") + b"\n")
         await w.drain()
+
     async def close(self):
         _, w = await self._get_read_write()
         w.close()
+
     async def get(self):
         r, w = await self._get_read_write()
         return await read_reply(r)
+
     def idle_time():
         return 0

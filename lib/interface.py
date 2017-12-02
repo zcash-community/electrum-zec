@@ -51,12 +51,11 @@ class Interface(util.PrintError):
     - Member variable server.
     """
 
-    def __init__(self, server, hostname_port, loop):
+    def __init__(self, server, loop):
         self.server = server
-        self.host, _, _ = server.rsplit(':', 2)
-
-        print("constructing socketpipe")
-        self.pipe = aio.SocketPipe(hostname_port, loop)
+        self.host, self.port, self.protocol = self.server.split(':')
+        assert self.protocol == "t", "Interface cannot do SSL yet!" # TODO
+        self.pipe = aio.SocketPipe(self.host, self.port, loop)
         # Dump network messages.  Set at runtime from the console.
         self.debug = False
         self.unsent_requests = asyncio.PriorityQueue(loop=loop)
