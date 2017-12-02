@@ -976,7 +976,7 @@ class Abstract_Wallet(PrintError):
 
     def stop_threads(self):
         if self.network:
-            self.network.remove_jobs([self.synchronizer, self.verifier])
+            self.network.remove_coroutines([self.synchronizer, self.verifier])
             self.synchronizer.release()
             self.synchronizer = None
             self.verifier = None
