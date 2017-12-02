@@ -933,14 +933,13 @@ class Network(util.DaemonThread):
             yield asyncio.ensure_future(job(), loop=self.loop)
 
     def make_process_responses_jobs(self):
+        async def job(interface):
+            try:
+                await self.process_responses(interface)
+            except Exception as e:
+                traceback.print_exc()
         for interface in self.interfaces.values():
-            async def job():
-                print("starting process responses job")
-                try:
-                    await self.process_responses(interface)
-                except Exception as e:
-                    traceback.print_exc()
-            yield asyncio.ensure_future(job(), loop=self.loop)
+            yield asyncio.ensure_future(job(interface), loop=self.loop)
 
     def make_process_pending_sends_job(self):
         async def job():
