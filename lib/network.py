@@ -923,14 +923,14 @@ class Network(util.DaemonThread):
                 continue
 
     def make_send_requests_jobs(self):
+        async def job(interface):
+            try:
+                while True:
+                    await interface.send_request()
+            except Exception as e:
+                traceback.print_exc()
         for interface in self.interfaces.values():
-            async def job():
-                try:
-                    while True:
-                        await interface.send_request()
-                except Exception as e:
-                    traceback.print_exc()
-            yield asyncio.ensure_future(job(), loop=self.loop)
+            yield asyncio.ensure_future(job(interface), loop=self.loop)
 
     def make_process_responses_jobs(self):
         async def job(interface):
