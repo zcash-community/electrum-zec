@@ -710,7 +710,7 @@ class Network(util.DaemonThread):
     async def new_interface(self, server):
         # todo: get tip first, then decide which checkpoint to use.
         self.add_recent_server(server)
-        interface = Interface(server, self.loop)
+        interface = Interface(server, self.loop, self.config.path)
         interface.blockchain = None
         interface.tip_header = None
         interface.tip = 0

@@ -1,4 +1,6 @@
 import asyncio
+import os
+import ssl
 import json
 from . import bitcoin
 
@@ -50,20 +52,35 @@ def asyncio_test(thiswallet):
     loop.close()
     return future.result()
 
+
+def get_ssl_context(cert_reqs, ca_certs):
+    context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_certs)
+    context.check_hostname = False
+    context.verify_mode = cert_reqs
+    context.options |= ssl.OP_NO_SSLv2
+    context.options |= ssl.OP_NO_SSLv3
+    context.options |= ssl.OP_NO_TLSv1
+    return context
+
+
 class SocketPipe:
 
-    def __init__(self, host, port, loop):
+    def __init__(self, host, port, use_ssl, config_path, loop):
         self.host = host
         self.port = int(port)
-        self.reader = self.writer = None
+        self.use_ssl = use_ssl
         self.loop = loop
+        self.config_path = config_path
+        self.reader = self.writer = None
         self.lock = asyncio.Lock(loop=loop)
+        self.cert_path = os.path.join(self.config_path, 'certs', self.host)
 
     async def _get_read_write(self):
         async with self.lock:
             if self.reader is not None and self.writer is not None:
                 return self.reader, self.writer
-            self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop)
+            context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=self.cert_path) if self.use_ssl else False
+            self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
             return self.reader, self.writer
 
     async def send_all(self, list_of_requests):
