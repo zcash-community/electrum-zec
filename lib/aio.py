@@ -73,14 +73,32 @@ class SocketPipe:
         self.config_path = config_path
         self.reader = self.writer = None
         self.lock = asyncio.Lock(loop=loop)
-        self.cert_path = os.path.join(self.config_path, 'certs', self.host)
 
     async def _get_read_write(self):
         async with self.lock:
             if self.reader is not None and self.writer is not None:
                 return self.reader, self.writer
-            context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=self.cert_path) if self.use_ssl else False
+            if self.use_ssl:
+                cert_path = os.path.join(self.config_path, 'certs', self.host)
+                if not os.path.exists(cert_path):
+                    print("no cert for", self.host)
+                    context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
+                    reader, writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+                    dercert = writer.get_extra_info('ssl_object').getpeercert(True)
+                    cert = ssl.DER_cert_to_PEM_cert(dercert)
+                    temporary_path = cert_path + '.temp'
+                    with open(temporary_path, "w") as f:
+                        f.write(cert)
+                    writer.close()
+                    is_new = True
+                else:
+                    is_new = False
+                ca_certs = temporary_path if is_new else cert_path
+            context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
             self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+            if self.use_ssl and is_new:
+                print("saving new certificate for", self.host)
+                os.rename(temporary_path, cert_path)
             return self.reader, self.writer
 
     async def send_all(self, list_of_requests):
