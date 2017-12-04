@@ -30,6 +30,7 @@ import threading
 import time
 import traceback
 import asyncio
+import json
 
 import requests
 
@@ -40,7 +41,26 @@ ca_path = requests.certs.where()
 from . import util
 from . import x509
 from . import pem
-from . import aio
+
+async def read_reply(reader):
+    obj = b""
+    while True:
+        obj += await reader.read(1)
+        try:
+            obj = json.loads(obj.decode("ascii"))
+        except ValueError:
+            continue
+        else:
+            return obj
+
+def get_ssl_context(cert_reqs, ca_certs):
+    context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_certs)
+    context.check_hostname = False
+    context.verify_mode = cert_reqs
+    context.options |= ssl.OP_NO_SSLv2
+    context.options |= ssl.OP_NO_SSLv3
+    context.options |= ssl.OP_NO_TLSv1
+    return context
 
 class Interface(util.PrintError):
     """The Interface class handles a socket connected to a single remote
@@ -53,8 +73,14 @@ class Interface(util.PrintError):
 
     def __init__(self, server, loop, config_path):
         self.server = server
-        self.host, self.port, self.protocol = self.server.split(':')
-        self.pipe = aio.SocketPipe(self.host, self.port, self.protocol=='s', config_path, loop)
+        self.loop = loop
+        self.config_path = config_path
+        host, port, protocol = self.server.split(':')
+        self.host = host
+        self.port = int(port)
+        self.use_ssl = (protocol=='s')
+        self.reader = self.writer = None
+        self.lock = asyncio.Lock(loop=loop)
         # Dump network messages.  Set at runtime from the console.
         self.debug = False
         self.unsent_requests = asyncio.PriorityQueue(loop=loop)
@@ -64,11 +90,55 @@ class Interface(util.PrintError):
         self.last_ping = 0
         self.closed_remotely = False
 
-    def diagnostic_name(self):
-        return self.host
+    async def _get_read_write(self):
+        async with self.lock:
+            if self.reader is not None and self.writer is not None:
+                return self.reader, self.writer
+            if self.use_ssl:
+                cert_path = os.path.join(self.config_path, 'certs', self.host)
+                if not os.path.exists(cert_path):
+                    print("no cert for", self.host)
+                    context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
+                    reader, writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+                    dercert = writer.get_extra_info('ssl_object').getpeercert(True)
+                    cert = ssl.DER_cert_to_PEM_cert(dercert)
+                    temporary_path = cert_path + '.temp'
+                    with open(temporary_path, "w") as f:
+                        f.write(cert)
+                    writer.close()
+                    is_new = True
+                else:
+                    is_new = False
+                ca_certs = temporary_path if is_new else cert_path
+            context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
+            print("qqq", self.host)
+            self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+            print("qqq2", self.host)
+            if self.use_ssl and is_new:
+                print("saving new certificate for", self.host)
+                os.rename(temporary_path, cert_path)
+            print("qqq3", self.host)
+            return self.reader, self.writer
+
+    async def send_all(self, list_of_requests):
+        _, w = await self._get_read_write()
+        for i in list_of_requests:
+            w.write(json.dumps(i).encode("ascii") + b"\n")
+        await w.drain()
 
     def close(self):
-        self.pipe.close()
+        if self.writer:
+            self.writer.close()
+
+    async def get(self):
+        r, w = await self._get_read_write()
+        return await read_reply(r)
+
+    def idle_time():
+        return 0
+
+    def diagnostic_name(self):
+        return self.host
 
     async def queue_request(self, *args):  # method, params, _id
         '''Queue a request, later to be send with send_requests when the
@@ -88,7 +158,7 @@ class Interface(util.PrintError):
         n = self.num_requests()
         prio, request = await self.unsent_requests.get()
         #try:
-        await self.pipe.send_all([make_dict(*request)])
+        await self.send_all([make_dict(*request)])
         #except Exception as e:
         #    traceback.print_exc()
         #    self.print_error("socket error:", e)
@@ -113,10 +183,9 @@ class Interface(util.PrintError):
     def has_timed_out(self):
         '''Returns True if the interface has timed out.'''
         if (self.unanswered_requests and time.time() - self.request_time > 10
-            and self.pipe.idle_time() > 10):
+            and self.idle_time() > 10):
             self.print_error("timeout", len(self.unanswered_requests))
             return True
-
         return False
 
     async def get_response(self):
@@ -128,7 +197,7 @@ class Interface(util.PrintError):
         corresponding request.  If the connection was closed remotely
         or the remote server is misbehaving, a (None, None) will appear.
         '''
-        response = await self.pipe.get()
+        response = await self.get()
         if not type(response) is dict:
             print("response type not dict!", response)
             if response is None:
