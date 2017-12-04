@@ -97,7 +97,6 @@ class Interface(util.PrintError):
             if self.use_ssl:
                 cert_path = os.path.join(self.config_path, 'certs', self.host)
                 if not os.path.exists(cert_path):
-                    print("no cert for", self.host)
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
                     reader, writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
                     dercert = writer.get_extra_info('ssl_object').getpeercert(True)
@@ -111,13 +110,10 @@ class Interface(util.PrintError):
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
             context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
-            print("qqq", self.host)
             self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
-            print("qqq2", self.host)
             if self.use_ssl and is_new:
-                print("saving new certificate for", self.host)
+                self.print_error("saving new certificate for", self.host)
                 os.rename(temporary_path, cert_path)
-            print("qqq3", self.host)
             return self.reader, self.writer
 
     async def send_all(self, list_of_requests):
