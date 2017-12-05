@@ -34,6 +34,8 @@ import json
 
 import requests
 
+from concurrent.futures import TimeoutError
+
 from .util import print_error
 
 ca_path = requests.certs.where()

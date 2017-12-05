@@ -956,11 +956,12 @@ class Network(util.DaemonThread):
             self.process_pending_sends_job = self.make_process_pending_sends_job()
             while True:
                 interface = await self.queued_interfaces.get()
-                assert interface is not None
                 while True:
                     await self.queue_request('server.version', [ELECTRUM_VERSION, PROTOCOL_VERSION], interface)
                     if not await interface.send_request():
-                        interface = await self.start_random_interface()
+                        interface = None
+                        while interface is None:
+                            interface = await self.start_random_interface()
                         continue
                     break
                 gathered = asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface), loop=self.loop)
