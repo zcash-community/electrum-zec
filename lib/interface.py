@@ -31,6 +31,7 @@ import time
 import traceback
 import asyncio
 import json
+import async_timeout
 
 import requests
 
@@ -98,7 +99,9 @@ class Interface(util.PrintError):
                 cert_path = os.path.join(self.config_path, 'certs', self.host)
                 if not os.path.exists(cert_path):
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
-                    reader, writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+                    async with async_timeout.timeout(1, loop=self.loop):
+                        reader, writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+
                     dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                     cert = ssl.DER_cert_to_PEM_cert(dercert)
                     temporary_path = cert_path + '.temp'
@@ -110,7 +113,8 @@ class Interface(util.PrintError):
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
             context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
-            self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+            async with async_timeout.timeout(1, loop=self.loop):
+                self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
             if self.use_ssl and is_new:
                 self.print_error("saving new certificate for", self.host)
                 os.rename(temporary_path, cert_path)
@@ -153,14 +157,12 @@ class Interface(util.PrintError):
         make_dict = lambda m, p, i: {'method': m, 'params': p, 'id': i}
         n = self.num_requests()
         prio, request = await self.unsent_requests.get()
-        #try:
-        await self.send_all([make_dict(*request)])
-        #except Exception as e:
-        #    traceback.print_exc()
-        #    self.print_error("socket error:", e)
-        #     sys.exit(1) # TODO
-        #    await self.unsent_requests.put((prio, request))
-        #    #return False
+        try:
+            await self.send_all([make_dict(*request)])
+        except (ConnectionRefusedError, TimeoutError) as e:
+            print("could not send")
+            await self.unsent_requests.put((prio, request))
+            return False
         if self.debug:
             self.print_error("-->", request)
         self.unanswered_requests[request[2]] = request
