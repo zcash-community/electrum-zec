@@ -22,6 +22,7 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+import aiosocks
 import os
 import re
 import ssl
@@ -34,6 +35,7 @@ import json
 
 import requests
 
+from aiosocks.errors import SocksError
 from concurrent.futures import TimeoutError
 
 from .util import print_error
@@ -62,7 +64,18 @@ class Interface(util.PrintError):
     - Member variable server.
     """
 
-    def __init__(self, server, loop, config_path):
+    def __init__(self, server, loop, config_path, proxy_config):
+        self.addr = self.auth = None
+        if proxy_config is not None:
+            if proxy_config["mode"] == "socks5":
+                self.addr = aiosocks.Socks5Addr(proxy_config["host"], proxy_config["port"])
+                self.auth = aiosocks.Socks5Auth(proxy_config["user"], proxy_config["password"]) if proxy_config["user"] != "" else None
+            elif proxy_config["mode"] == "socks4":
+                self.addr = aiosocks.Socks4Addr(proxy_config["host"], proxy_config["port"])
+                self.auth = aiosocks.Socks4Auth(proxy_config["password"]) if proxy_config["password"] != "" else None
+            else:
+                raise Exception("proxy mode not supported")
+
         self.server = server
         self.loop = loop
         self.config_path = config_path
@@ -79,6 +92,12 @@ class Interface(util.PrintError):
         self.last_ping = 0
         self.closed_remotely = False
 
+    def conn_coro(self, context):
+        if self.auth is None and self.addr is None:
+            return asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+        else:
+            return aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), ssl=context, loop=self.loop)
+
     async def _get_read_write(self):
         async with self.lock:
             if self.reader is not None and self.writer is not None:
@@ -87,7 +106,7 @@ class Interface(util.PrintError):
                 cert_path = os.path.join(self.config_path, 'certs', self.host)
                 if not os.path.exists(cert_path):
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
-                    reader, writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context), 1, loop=self.loop)
+                    reader, writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
 
                     dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                     cert = ssl.DER_cert_to_PEM_cert(dercert)
@@ -100,7 +119,7 @@ class Interface(util.PrintError):
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
             context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
-            self.reader, self.writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context), 1, loop=self.loop)
+            self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
             if self.use_ssl and is_new:
                 self.print_error("saving new certificate for", self.host)
                 os.rename(temporary_path, cert_path)
@@ -161,7 +180,9 @@ class Interface(util.PrintError):
         prio, request = await self.unsent_requests.get()
         try:
             await self.send_all([make_dict(*request)])
-        except (OSError, TimeoutError) as e:
+        except (SocksError, OSError, TimeoutError) as e:
+            if type(e) is SocksError:
+                print(e)
             await self.unsent_requests.put((prio, request))
             return False
         if self.debug:

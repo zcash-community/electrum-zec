@@ -35,7 +35,6 @@ import json
 import asyncio
 import traceback
 
-import socks
 from . import util
 from . import bitcoin
 from .bitcoin import *
@@ -47,7 +46,7 @@ from .version import ELECTRUM_VERSION, PROTOCOL_VERSION
 NODES_RETRY_INTERVAL = 60
 SERVER_RETRY_INTERVAL = 10
 
-from concurrent.futures import TimeoutError, CancelledError
+from concurrent.futures import CancelledError
 
 def parse_servers(result):
     """ parse servers list into dict format"""
@@ -348,8 +347,7 @@ class Network(util.DaemonThread):
 
     def get_parameters(self):
         host, port, protocol = deserialize_server(self.default_server)
-        # TODO None was proxy. Proxy was removed for asyncio
-        return host, port, protocol, None, self.auto_connect
+        return host, port, protocol, self.proxy, self.auto_connect
 
     def get_donation_address(self):
         if self.is_connected():
@@ -393,28 +391,6 @@ class Network(util.DaemonThread):
         for i in range(self.num_server - 1):
             await self.start_random_interface()
 
-#    def set_proxy(self, proxy):
-#        self.proxy = proxy
-#        # Store these somewhere so we can un-monkey-patch
-#        if not hasattr(socket, "_socketobject"):
-#            socket._socketobject = socket.socket
-#            socket._getaddrinfo = socket.getaddrinfo
-#        if proxy:
-#            self.print_error('setting proxy', proxy)
-#            proxy_mode = proxy_modes.index(proxy["mode"]) + 1
-#            socks.setdefaultproxy(proxy_mode,
-#                                  proxy["host"],
-#                                  int(proxy["port"]),
-#                                  # socks.py seems to want either None or a non-empty string
-#                                  username=(proxy.get("user", "") or None),
-#                                  password=(proxy.get("password", "") or None))
-#            socket.socket = socks.socksocket
-#            # prevent dns leaks, see http://stackoverflow.com/questions/13184205/dns-over-proxy
-#            socket.getaddrinfo = lambda *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
-#        else:
-#            socket.socket = socket._socketobject
-#            socket.getaddrinfo = socket._getaddrinfo
-
     async def start_network(self, protocol, proxy):
         # TODO proxy
         assert not self.interface and not self.interfaces
@@ -422,6 +398,7 @@ class Network(util.DaemonThread):
         self.print_error('starting network')
         self.disconnected_servers = set([])
         self.protocol = protocol
+        self.proxy = proxy
         await self.start_interfaces()
 
     async def stop_network(self):
@@ -518,6 +495,8 @@ class Network(util.DaemonThread):
                 self.interface = None
             if interface.jobs is not None:
                 interface.jobs.cancel()
+            if self.process_pending_sends_job is not None:
+                self.process_pending_sends_job.cancel()
             interface.close()
 
     def add_recent_server(self, server):
@@ -577,7 +556,7 @@ class Network(util.DaemonThread):
         return str(method) + (':' + str(params[0]) if params else '')
 
     async def process_responses(self, interface):
-        while True:
+        while self.is_running():
             request, response = await interface.get_response()
             if request:
                 method, params, message_id = request
@@ -715,7 +694,7 @@ class Network(util.DaemonThread):
     async def new_interface(self, server):
         # todo: get tip first, then decide which checkpoint to use.
         self.add_recent_server(server)
-        interface = Interface(server, self.loop, self.config.path)
+        interface = Interface(server, self.loop, self.config.path, self.proxy)
         interface.blockchain = None
         interface.tip_header = None
         interface.tip = 0
@@ -891,10 +870,9 @@ class Network(util.DaemonThread):
     def make_send_requests_job(self, interface):
         async def job():
             try:
-                while True:
+                while self.is_running():
                     result = await interface.send_request()
                     if not result:
-                        print("got exception, downing connection", type(e))
                         self.connection_down(interface.server)
             except CancelledError:
                 pass
@@ -920,7 +898,7 @@ class Network(util.DaemonThread):
     def make_process_pending_sends_job(self):
         async def job():
             try:
-                while True:
+                while self.is_running():
                     await self.process_pending_sends()
             except CancelledError:
                 pass
@@ -959,7 +937,7 @@ class Network(util.DaemonThread):
             await self.start_network(deserialize_server(self.default_server)[2],
                                      deserialize_proxy(self.config.get('proxy')))
             self.process_pending_sends_job = self.make_process_pending_sends_job()
-            while True:
+            while self.is_running():
                 interface = await self.queued_interfaces.get()
                 await self.queue_request('server.version', [ELECTRUM_VERSION, PROTOCOL_VERSION], interface)
                 if not await interface.send_request():
@@ -987,7 +965,7 @@ class Network(util.DaemonThread):
     def make_ping_job(self, interface):
         async def job():
             try:
-                while True:
+                while self.is_running():
                     await asyncio.sleep(1)
                     # Send pings and shut down stale interfaces
                     # must use copy of values
