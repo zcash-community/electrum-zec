@@ -44,17 +44,6 @@ from . import util
 from . import x509
 from . import pem
 
-async def read_reply(reader):
-    obj = b""
-    while True:
-        obj += await reader.read(1)
-        try:
-            obj = json.loads(obj.decode("ascii"))
-        except ValueError:
-            continue
-        else:
-            return obj
-
 def get_ssl_context(cert_reqs, ca_certs):
     context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=ca_certs)
     context.check_hostname = False
@@ -87,8 +76,6 @@ class Interface(util.PrintError):
         self.debug = False
         self.unsent_requests = asyncio.PriorityQueue(loop=loop)
         self.unanswered_requests = {}
-        # Set last ping to zero to ensure immediate ping
-        self.last_request = time.time()
         self.last_ping = 0
         self.closed_remotely = False
 
@@ -130,11 +117,27 @@ class Interface(util.PrintError):
             self.writer.close()
 
     async def get(self):
-        r, w = await self._get_read_write()
-        return await read_reply(r)
+        reader, _ = await self._get_read_write()
 
-    def idle_time():
-        return 0
+        obj = b""
+        while True:
+            if len(obj) > 3000000:
+                raise BaseException("too much data: " + str(len(obj)))
+            try:
+                obj += await reader.readuntil(b"\n")
+            except asyncio.LimitOverrunError as e:
+                print("LimitOverrunError with", e.consumed, "consumed")
+                obj += await reader.read(e.consumed)
+            try:
+                obj = json.loads(obj.decode("ascii"))
+            except ValueError:
+                continue
+            else:
+                self.last_action = time.time()
+                return obj
+
+    def idle_time(self):
+        return time.time() - self.last_action
 
     def diagnostic_name(self):
         return self.host
@@ -158,13 +161,13 @@ class Interface(util.PrintError):
         prio, request = await self.unsent_requests.get()
         try:
             await self.send_all([make_dict(*request)])
-        except (ConnectionRefusedError, TimeoutError) as e:
-            print("could not send")
+        except (OSError, TimeoutError) as e:
             await self.unsent_requests.put((prio, request))
             return False
         if self.debug:
             self.print_error("-->", request)
         self.unanswered_requests[request[2]] = request
+        self.last_action = time.time()
         return True
 
     def ping_required(self):
@@ -205,7 +208,6 @@ class Interface(util.PrintError):
             self.print_error("<--", response)
         wire_id = response.get('id', None)
         if wire_id is None:  # Notification
-            print("notification")
             return None, response
         else:
             request = self.unanswered_requests.pop(wire_id, None)

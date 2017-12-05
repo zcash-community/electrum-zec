@@ -47,6 +47,7 @@ from .version import ELECTRUM_VERSION, PROTOCOL_VERSION
 NODES_RETRY_INTERVAL = 60
 SERVER_RETRY_INTERVAL = 10
 
+from concurrent.futures import TimeoutError, CancelledError
 
 def parse_servers(result):
     """ parse servers list into dict format"""
@@ -516,7 +517,6 @@ class Network(util.DaemonThread):
             if interface.server == self.default_server:
                 self.interface = None
             if interface.jobs is not None:
-                print("cancelling")
                 interface.jobs.cancel()
             interface.close()
 
@@ -603,7 +603,7 @@ class Network(util.DaemonThread):
                     self.subscribed_addresses.add(params[0])
             else:
                 if not response:  # Closed remotely / misbehaving
-                    await self.connection_down(interface.server)
+                    self.connection_down(interface.server)
                     return
                 # Rewrite response shape to match subscription request response
                 method = response.get('method')
@@ -701,7 +701,6 @@ class Network(util.DaemonThread):
     def connection_down(self, server):
         '''A connection to server either went down, or was never made.
         We distinguish by whether it is in self.interfaces.'''
-        raise Exception("DOWNED")
         self.print_error("connection down", server)
         self.disconnected_servers.add(server)
         if server == self.default_server:
@@ -729,6 +728,7 @@ class Network(util.DaemonThread):
     async def request_chunk(self, interface, idx):
         interface.print_error("requesting chunk %d" % idx)
         await self.queue_request('blockchain.block.get_chunk', [idx], interface)
+        assert interface.jobs
         interface.request = idx
         interface.req_time = time.time()
 
@@ -747,7 +747,7 @@ class Network(util.DaemonThread):
         connect = interface.blockchain.connect_chunk(index, result)
         # If not finished, get the next chunk
         if not connect:
-            await self.connection_down(interface.server)
+            self.connection_down(interface.server)
             return
         if interface.blockchain.height() < interface.tip:
             await self.request_chunk(interface, index+1)
@@ -769,12 +769,12 @@ class Network(util.DaemonThread):
         header = response.get('result')
         if not header:
             interface.print_error(response)
-            await self.connection_down(interface.server)
+            self.connection_down(interface.server)
             return
         height = header.get('block_height')
         if interface.request != height:
             interface.print_error("unsolicited header",interface.request, height)
-            await self.connection_down(interface.server)
+            self.connection_down(interface.server)
             return
 
         chain = blockchain.check_header(header)
@@ -787,7 +787,7 @@ class Network(util.DaemonThread):
                 next_height = (interface.bad + interface.good) // 2
             else:
                 if height == 0:
-                    await self.connection_down(interface.server)
+                    self.connection_down(interface.server)
                     next_height = None
                 else:
                     interface.bad = height
@@ -805,7 +805,7 @@ class Network(util.DaemonThread):
             if interface.bad != interface.good + 1:
                 next_height = (interface.bad + interface.good) // 2
             elif not interface.blockchain.can_connect(interface.bad_header, check_height=False):
-                await self.connection_down(interface.server)
+                self.connection_down(interface.server)
                 next_height = None
             else:
                 branch = self.blockchains.get(interface.bad)
@@ -886,8 +886,7 @@ class Network(util.DaemonThread):
         for interface in list(self.interfaces.values()):
             if interface.request and time.time() - interface.request_time > 20:
                 interface.print_error("blockchain request timed out")
-                await self.connection_down(interface.server)
-                continue
+                self.connection_down(interface.server)
 
     def make_send_requests_job(self, interface):
         async def job():
@@ -896,7 +895,9 @@ class Network(util.DaemonThread):
                     result = await interface.send_request()
                     if not result:
                         print("got exception, downing connection", type(e))
-                        await self.connection_down(interface.server)
+                        self.connection_down(interface.server)
+            except CancelledError:
+                pass
             except:
                 traceback.print_exc()
                 print("FATAL ERROR ^^^")
@@ -906,8 +907,10 @@ class Network(util.DaemonThread):
         async def job():
             try:
                 await self.process_responses(interface)
+            except CancelledError:
+                pass
             except OSError:
-                await self.connection_down(interface.server)
+                self.connection_down(interface.server)
                 print("OS error, connection downed")
             except BaseException:
                 traceback.print_exc()
@@ -919,6 +922,8 @@ class Network(util.DaemonThread):
             try:
                 while True:
                     await self.process_pending_sends()
+            except CancelledError:
+                pass
             except BaseException as e:
                 traceback.print_exc()
                 print("FATAL ERROR in process_pending_sends")
@@ -956,19 +961,17 @@ class Network(util.DaemonThread):
             self.process_pending_sends_job = self.make_process_pending_sends_job()
             while True:
                 interface = await self.queued_interfaces.get()
-                while True:
-                    await self.queue_request('server.version', [ELECTRUM_VERSION, PROTOCOL_VERSION], interface)
-                    if not await interface.send_request():
-                        interface = None
-                        while interface is None:
-                            interface = await self.start_random_interface()
-                        continue
-                    break
+                await self.queue_request('server.version', [ELECTRUM_VERSION, PROTOCOL_VERSION], interface)
+                if not await interface.send_request():
+                    print("interface did not work")
+                    self.connection_down(interface.server)
+                    continue
                 gathered = asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface), loop=self.loop)
                 interface.jobs = asyncio.ensure_future(gathered, loop=self.loop)
                 def cb(fut):
                    fut.exception()
-                   print(fut.result())
+                   for i in fut.result(): assert i is None
+                   if not future.done(): future.set_result("Network job done")
                 interface.jobs.add_done_callback(cb)
                 self.interfaces[interface.server] = interface
                 await self.queue_request('blockchain.headers.subscribe', [], interface)
@@ -979,7 +982,7 @@ class Network(util.DaemonThread):
         except BaseException as e:
             traceback.print_exc()
             print("FATAL ERROR in network_job")
-            future.set_exception(e)
+            if not future.done(): future.set_exception(e)
 
     def make_ping_job(self, interface):
         async def job():
@@ -989,10 +992,12 @@ class Network(util.DaemonThread):
                     # Send pings and shut down stale interfaces
                     # must use copy of values
                     if interface.has_timed_out():
-                        await self.connection_down(interface.server)
+                        self.connection_down(interface.server)
                     elif interface.ping_required():
                         params = [ELECTRUM_VERSION, PROTOCOL_VERSION]
                         await self.queue_request('server.version', params, interface)
+            except CancelledError:
+                pass
             except:
                 traceback.print_exc()
                 print("FATAL ERRROR in ping_job")
@@ -1026,7 +1031,6 @@ class Network(util.DaemonThread):
 
 
     def run(self):
-        print("run called")
         self.loop = asyncio.new_event_loop()
         for i in self.run_on_start:
             asyncio.ensure_future(i(future), loop=self.loop)
@@ -1061,7 +1065,7 @@ class Network(util.DaemonThread):
                 await self.maintain_interfaces()
             await self.stop_network()
             self.on_stop()
-            future.set_result("Done")
+            future.set_result("run_async done")
         except BaseException as e:
             future.set_exception(e)
 
