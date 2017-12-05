@@ -31,7 +31,6 @@ import time
 import traceback
 import asyncio
 import json
-import async_timeout
 
 import requests
 
@@ -99,8 +98,7 @@ class Interface(util.PrintError):
                 cert_path = os.path.join(self.config_path, 'certs', self.host)
                 if not os.path.exists(cert_path):
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
-                    async with async_timeout.timeout(1, loop=self.loop):
-                        reader, writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+                    reader, writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context), 1, loop=self.loop)
 
                     dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                     cert = ssl.DER_cert_to_PEM_cert(dercert)
@@ -113,8 +111,7 @@ class Interface(util.PrintError):
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
             context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
-            async with async_timeout.timeout(1, loop=self.loop):
-                self.reader, self.writer = await asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+            self.reader, self.writer = await asyncio.wait_for(asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context), 1, loop=self.loop)
             if self.use_ssl and is_new:
                 self.print_error("saving new certificate for", self.host)
                 os.rename(temporary_path, cert_path)

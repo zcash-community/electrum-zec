@@ -290,6 +290,7 @@ class Network(util.DaemonThread):
         # If you want to queue a request on any interface it must go
         # through this function so message ids are properly tracked
         if interface is None:
+            assert self.interface is not None
             interface = self.interface
         message_id = self.message_id
         self.message_id += 1
@@ -955,6 +956,7 @@ class Network(util.DaemonThread):
             self.process_pending_sends_job = self.make_process_pending_sends_job()
             while True:
                 interface = await self.queued_interfaces.get()
+                assert interface is not None
                 while True:
                     await self.queue_request('server.version', [ELECTRUM_VERSION, PROTOCOL_VERSION], interface)
                     if not await interface.send_request():
