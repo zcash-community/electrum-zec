@@ -32,6 +32,7 @@ import time
 import traceback
 import asyncio
 import json
+import asyncio.streams
 
 import requests
 
@@ -106,9 +107,15 @@ class Interface(util.PrintError):
                 cert_path = os.path.join(self.config_path, 'certs', self.host)
                 if not os.path.exists(cert_path):
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
-                    reader, writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
+                    if self.addr is not None:
+                        create_coro = aiosocks.create_connection(None, self.addr, self.auth, (self.host, self.port), loop=self.loop, ssl=context)
+                        transport, protocol = await asyncio.wait_for(create_coro, 5, loop=self.loop)
+                        dercert = protocol._tls_protocol._sslpipe.ssl_object.getpeercert(True)
+                        reader, writer = protocol.reader, protocol.writer
+                    else:
+                        reader, writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
 
-                    dercert = writer.get_extra_info('ssl_object').getpeercert(True)
+                        dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                     cert = ssl.DER_cert_to_PEM_cert(dercert)
                     temporary_path = cert_path + '.temp'
                     with open(temporary_path, "w") as f:
@@ -119,7 +126,12 @@ class Interface(util.PrintError):
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
             context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
-            self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
+            try:
+                self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
+            except BaseException as e:
+                traceback.print_exc()
+                print("Previous exception will now be reraised")
+                raise e
             if self.use_ssl and is_new:
                 self.print_error("saving new certificate for", self.host)
                 os.rename(temporary_path, cert_path)
@@ -147,6 +159,8 @@ class Interface(util.PrintError):
             except asyncio.LimitOverrunError as e:
                 print("LimitOverrunError with", e.consumed, "consumed")
                 obj += await reader.read(e.consumed)
+            except asyncio.streams.IncompleteReadError as e:
+                return None
             try:
                 obj = json.loads(obj.decode("ascii"))
             except ValueError:

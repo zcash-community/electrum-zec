@@ -947,9 +947,12 @@ class Network(util.DaemonThread):
                 gathered = asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface), loop=self.loop)
                 interface.jobs = asyncio.ensure_future(gathered, loop=self.loop)
                 def cb(fut):
-                   fut.exception()
-                   for i in fut.result(): assert i is None
-                   if not future.done(): future.set_result("Network job done")
+                    fut.exception()
+                    try:
+                        for i in fut.result(): assert i is None
+                    except CancelledError:
+                        pass
+                    if not future.done(): future.set_result("Network job done")
                 interface.jobs.add_done_callback(cb)
                 self.interfaces[interface.server] = interface
                 await self.queue_request('blockchain.headers.subscribe', [], interface)
