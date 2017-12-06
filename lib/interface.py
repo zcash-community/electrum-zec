@@ -33,6 +33,7 @@ import traceback
 import asyncio
 import json
 import asyncio.streams
+from asyncio.sslproto import SSLProtocol
 
 import requests
 
@@ -94,10 +95,19 @@ class Interface(util.PrintError):
         self.closed_remotely = False
 
     def conn_coro(self, context):
-        if self.auth is None and self.addr is None:
-            return asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
-        else:
-            return aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), ssl=context, loop=self.loop)
+        return asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+
+    def make_ssl_protocol_factory(self, context):
+        class MySSLProtocol(SSLProtocol):
+            async def _drain_helper(otherself):
+                pass
+            def _process_write_backlog(otherself):
+                print("backlog")
+                super()._process_write_backlog()
+            def __init__(otherself):
+                super().__init__(self.loop, None, context, None)
+                #                      app_proto           waiter
+        return MySSLProtocol
 
     async def _get_read_write(self):
         async with self.lock:
@@ -108,26 +118,38 @@ class Interface(util.PrintError):
                 if not os.path.exists(cert_path):
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
                     if self.addr is not None:
-                        create_coro = aiosocks.create_connection(None, self.addr, self.auth, (self.host, self.port), loop=self.loop, ssl=context)
-                        transport, protocol = await asyncio.wait_for(create_coro, 5, loop=self.loop)
-                        dercert = protocol._tls_protocol._sslpipe.ssl_object.getpeercert(True)
-                        reader, writer = protocol.reader, protocol.writer
+                        transport, protocol = await asyncio.wait_for(aiosocks.create_connection(self.make_ssl_protocol_factory(None), proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), loop=self.loop), 5, loop=self.loop)
+                        while True:
+                            try:
+                                if protocol._sslpipe is not None:
+                                    dercert = protocol._sslpipe.ssl_object.getpeercert(True)
+                                    print("dercert", dercert)
+                                    break
+                            except ValueError:
+                                print("sleeping for cert")
+                                await asyncio.sleep(1)
+                        transport.close()
                     else:
                         reader, writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
-
                         dercert = writer.get_extra_info('ssl_object').getpeercert(True)
+                        writer.close()
                     cert = ssl.DER_cert_to_PEM_cert(dercert)
                     temporary_path = cert_path + '.temp'
                     with open(temporary_path, "w") as f:
                         f.write(cert)
-                    writer.close()
                     is_new = True
                 else:
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
             context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
             try:
-                self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
+                if self.addr is not None:
+                    transport, protocol = await asyncio.wait_for(aiosocks.create_connection(self.make_ssl_protocol_factory(context), proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), loop=self.loop), 5, loop=self.loop)
+                    self.reader = asyncio.StreamReader(loop=self.loop)
+                    self.reader.set_transport(transport)
+                    self.writer = asyncio.StreamWriter(transport, protocol, self.reader, self.loop)
+                else:
+                    self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
             except BaseException as e:
                 traceback.print_exc()
                 print("Previous exception will now be reraised")
