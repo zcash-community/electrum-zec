@@ -44,7 +44,7 @@ setup(
         'protobuf',
         'dnspython',
         'jsonrpclib-pelix',
-        'PySocks>=1.6.6',
+        'aiosocks>=0.2.6',
     ],
     packages=[
         'electrum',

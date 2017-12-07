@@ -41,6 +41,7 @@ from aiosocks.errors import SocksError
 from concurrent.futures import TimeoutError
 
 from .util import print_error
+from .ssl_in_socks import sslInSocksReaderWriter
 
 ca_path = requests.certs.where()
 
@@ -97,18 +98,6 @@ class Interface(util.PrintError):
     def conn_coro(self, context):
         return asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
 
-    def make_ssl_protocol_factory(self, context):
-        class MySSLProtocol(SSLProtocol):
-            async def _drain_helper(otherself):
-                pass
-            def _process_write_backlog(otherself):
-                print("backlog")
-                super()._process_write_backlog()
-            def __init__(otherself):
-                super().__init__(self.loop, None, context, None)
-                #                      app_proto           waiter
-        return MySSLProtocol
-
     async def _get_read_write(self):
         async with self.lock:
             if self.reader is not None and self.writer is not None:
@@ -118,12 +107,17 @@ class Interface(util.PrintError):
                 if not os.path.exists(cert_path):
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
                     if self.addr is not None:
-                        transport, protocol = await asyncio.wait_for(aiosocks.create_connection(self.make_ssl_protocol_factory(None), proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), loop=self.loop), 5, loop=self.loop)
+                        proto_factory = lambda: SSLProtocol(self.loop, asyncio.Protocol(), context, None)
+                        socks_create_coro = aiosocks.create_connection(proto_factory, \
+                                            proxy=self.addr, \
+                                            proxy_auth=self.auth, \
+                                            dst=(self.host, self.port),
+                                            loop=self.loop)
+                        transport, protocol = await asyncio.wait_for(socks_create_coro, 5, loop=self.loop)
                         while True:
                             try:
                                 if protocol._sslpipe is not None:
                                     dercert = protocol._sslpipe.ssl_object.getpeercert(True)
-                                    print("dercert", dercert)
                                     break
                             except ValueError:
                                 print("sleeping for cert")
@@ -141,14 +135,16 @@ class Interface(util.PrintError):
                 else:
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
-            context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else False
             try:
                 if self.addr is not None:
-                    transport, protocol = await asyncio.wait_for(aiosocks.create_connection(self.make_ssl_protocol_factory(context), proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), loop=self.loop), 5, loop=self.loop)
-                    self.reader = asyncio.StreamReader(loop=self.loop)
-                    self.reader.set_transport(transport)
-                    self.writer = asyncio.StreamWriter(transport, protocol, self.reader, self.loop)
+                    if not self.use_ssl:
+                        open_coro = aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), loop=self.loop)
+                        self.reader, self.writer = await asyncio.wait_for(open_coro, 5, loop=self.loop)
+                    else:
+                        asyncio.set_event_loop(self.loop)
+                        self.reader, self.writer = await sslInSocksReaderWriter(self.addr, self.auth, self.host, self.port, ca_certs)
                 else:
+                    context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else None
                     self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
             except BaseException as e:
                 traceback.print_exc()
