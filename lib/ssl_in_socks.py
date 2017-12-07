@@ -25,10 +25,10 @@ def makeProtocolFactory(receivedQueue, connUpLock, ca_certs):
             print("conn lost")
             super().connection_lost(data)
         def _on_handshake_complete(self, handshake_exc):
+            super()._on_handshake_complete(handshake_exc)
             if handshake_exc is not None:
                 print("handshake complete", handshake_exc)
-            print("cert length", len(self._sslpipe.ssl_object.getpeercert(True)))
-            super()._on_handshake_complete(handshake_exc)
+                print("cert length", len(self._sslpipe.ssl_object.getpeercert(True)))
         def __init__(self):
             context = interface.get_ssl_context(cert_reqs=ssl.CERT_REQUIRED if ca_certs is not None else ssl.CERT_NONE, ca_certs=ca_certs)
             proto = AppProto(receivedQueue, connUpLock)
@@ -59,7 +59,6 @@ async def sslInSocksReaderWriter(socksAddr, socksAuth, host, port, ca_certs):
     transport, protocol = await aiosocks.create_connection(makeProtocolFactory(receivedQueue, connUpLock, ca_certs), proxy=socksAddr, proxy_auth=socksAuth, dst=(host, port))
     await connUpLock.acquire()
     return ReaderEmulator(receivedQueue), WriterEmulator(protocol._app_transport)
-    transport.close()
 
 if __name__ == "__main__":
     async def l(fut):

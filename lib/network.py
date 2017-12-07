@@ -1044,6 +1044,7 @@ class Network(util.DaemonThread):
                 await asyncio.sleep(1)
                 await self.maintain_requests()
                 await self.maintain_interfaces()
+                self.run_jobs()
             await self.stop_network()
             self.on_stop()
             future.set_result("run_async done")
