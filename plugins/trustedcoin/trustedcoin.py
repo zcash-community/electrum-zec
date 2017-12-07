@@ -25,10 +25,8 @@
 
 import socket
 import os
-import re
 import requests
 import json
-from hashlib import sha256
 from urllib.parse import urljoin
 from urllib.parse import quote
 
@@ -38,9 +36,9 @@ from electrum import keystore
 from electrum.bitcoin import *
 from electrum.mnemonic import Mnemonic
 from electrum import version
-from electrum.wallet import Multisig_Wallet, Deterministic_Wallet, Wallet
+from electrum.wallet import Multisig_Wallet, Deterministic_Wallet
 from electrum.i18n import _
-from electrum.plugins import BasePlugin, run_hook, hook
+from electrum.plugins import BasePlugin, hook
 from electrum.util import NotEnoughFunds
 
 # signing_xpub is hardcoded so that the wallet can be restored from seed, without TrustedCoin's server
@@ -566,8 +564,7 @@ class TrustedCoinPlugin(BasePlugin):
             _, _, _, _, c, k = deserialize_xprv(xprv)
             pk = bip32_private_key([0, 0], k, c)
             key = regenerate_key(pk)
-            compressed = is_compressed(pk)
-            sig = key.sign_message(message, compressed)
+            sig = key.sign_message(message, True)
             return base64.b64encode(sig).decode()
 
         signatures = [f(x) for x in [xprv1, xprv2]]

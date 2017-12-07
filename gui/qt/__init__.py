@@ -23,10 +23,9 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import sys
-import os
 import signal
 import traceback
+import sys
 
 try:
     import PyQt5
@@ -40,11 +39,12 @@ import PyQt5.QtCore as QtCore
 
 from electrum.i18n import _, set_language
 from electrum.plugins import run_hook
-from electrum import SimpleConfig, Wallet, WalletStorage
-from electrum.synchronizer import Synchronizer
-from electrum.verifier import SPV
-from electrum.util import DebugMem, UserCancelled, InvalidPassword, print_error
-from electrum.wallet import Abstract_Wallet
+from electrum import WalletStorage
+# from electrum.synchronizer import Synchronizer
+# from electrum.verifier import SPV
+# from electrum.util import DebugMem
+from electrum.util import UserCancelled, print_error
+# from electrum.wallet import Abstract_Wallet
 
 from .installwizard import InstallWizard, GoBack
 from electrum.lightning import LightningUI
@@ -198,7 +198,7 @@ class ElectrumGui:
                 d.exec_()
                 return
             if not wallet:
-                storage = WalletStorage(path)
+                storage = WalletStorage(path, manual_upgrades=True)
                 wizard = InstallWizard(self.config, self.app, self.plugins, storage)
                 try:
                     wallet = wizard.run_and_get_wallet()

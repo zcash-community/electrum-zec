@@ -25,7 +25,6 @@
 import sys, time, threading
 import os, json, traceback
 import shutil
-import socket
 import weakref
 import webbrowser
 import csv
@@ -33,13 +32,11 @@ from decimal import Decimal
 import base64
 from functools import partial
 
-import PyQt5
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import *
-from PyQt5.QtCore import *
-import PyQt5.QtCore as QtCore
+from PyQt5.QtWidgets import *
 
 from electrum.util import bh2u, bfh
-from . import icons_rc
 
 from electrum import keystore
 from electrum.bitcoin import COIN, is_address, TYPE_ADDRESS
@@ -48,24 +45,20 @@ from electrum.i18n import _
 from electrum.util import (format_time, format_satoshis, PrintError,
                            format_satoshis_plain, NotEnoughFunds,
                            UserCancelled)
-from electrum import Transaction, mnemonic
+from electrum import Transaction
 from electrum import util, bitcoin, commands, coinchooser
-from electrum import SimpleConfig, paymentrequest
-from electrum.wallet import Wallet, Multisig_Wallet
+from electrum import paymentrequest
+from electrum.wallet import Multisig_Wallet
 try:
     from electrum.plot import plot_history
 except:
     plot_history = None
 
-from .amountedit import AmountEdit, BTCAmountEdit, MyLineEdit, BTCkBEdit
+from .amountedit import AmountEdit, BTCAmountEdit, MyLineEdit
 from .qrcodewidget import QRCodeWidget, QRDialog
 from .qrtextedit import ShowQRTextEdit, ScanQRTextEdit
 from .transaction_dialog import show_transaction
 from .fee_slider import FeeSlider
-
-
-from electrum import ELECTRUM_VERSION
-import re
 
 from .util import *
 
@@ -85,17 +78,18 @@ class StatusBarButton(QPushButton):
         self.func()
 
     def keyPressEvent(self, e):
-        if e.key() == QtCore.Qt.Key_Return:
+        if e.key() == Qt.Key_Return:
             self.func()
 
 
-from electrum.paymentrequest import PR_UNPAID, PR_PAID, PR_UNKNOWN, PR_EXPIRED
+from electrum.paymentrequest import PR_PAID
 
 
 class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
     payment_request_ok_signal = pyqtSignal()
     payment_request_error_signal = pyqtSignal()
+    notify_transactions_signal = pyqtSignal()
     new_fx_quotes_signal = pyqtSignal()
     new_fx_history_signal = pyqtSignal()
     network_signal = pyqtSignal(str, object)
@@ -124,6 +118,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.require_fee_update = False
         self.tx_notifications = []
         self.tl_windows = []
+        self.tx_external_keypairs = {}
 
         self.create_status_bar()
         self.need_update = threading.Event()
@@ -179,6 +174,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         self.payment_request_ok_signal.connect(self.payment_request_ok)
         self.payment_request_error_signal.connect(self.payment_request_error)
+        self.notify_transactions_signal.connect(self.notify_transactions)
         self.history_list.setFocus(True)
 
         # network callbacks
@@ -290,6 +286,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         elif event == 'new_transaction':
             self.tx_notifications.append(args[0])
+            self.notify_transactions_signal.emit()
         elif event in ['status', 'banner', 'verified', 'fee']:
             # Handle in GUI thread
             self.network_signal.emit(event, args)
@@ -563,7 +560,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                     is_relevant, is_mine, v, fee = self.wallet.get_wallet_delta(tx)
                     if(v > 0):
                         total_amount += v
-                self.notify(_("%(txs)s new transactions received. Total amount received in the new transactions %(amount)s") \
+                self.notify(_("%(txs)s new transactions received: Total amount received in the new transactions %(amount)s") \
                             % { 'txs' : tx_amount, 'amount' : self.format_amount_and_units(total_amount)})
                 self.tx_notifications = []
             else:
@@ -572,11 +569,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
                       self.tx_notifications.remove(tx)
                       is_relevant, is_mine, v, fee = self.wallet.get_wallet_delta(tx)
                       if(v > 0):
-                          self.notify(_("New transaction received. %(amount)s") % { 'amount' : self.format_amount_and_units(v)})
+                          self.notify(_("New transaction received: %(amount)s") % { 'amount' : self.format_amount_and_units(v)})
 
     def notify(self, message):
         if self.tray:
-            self.tray.showMessage("Electrum", message, QSystemTrayIcon.Information, 20000)
+            try:
+                # this requires Qt 5.9
+                self.tray.showMessage("Electrum", message, QIcon(":icons/electrum_dark_icon"), 20000)
+            except TypeError:
+                self.tray.showMessage("Electrum", message, QSystemTrayIcon.Information, 20000)
 
 
 
@@ -928,7 +929,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
     def new_payment_request(self):
         addr = self.wallet.get_unused_address()
         if addr is None:
-            from electrum.wallet import Imported_Wallet
             if not self.wallet.is_deterministic():
                 msg = [
                     _('No more addresses in your wallet.'),
@@ -1354,7 +1354,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         if use_rbf:
             tx.set_rbf(True)
 
-        if fee < self.wallet.relayfee() * tx.estimated_size() / 1000 and tx.requires_fee(self.wallet):
+        if fee < self.wallet.relayfee() * tx.estimated_size() / 1000:
             self.show_error(_("This transaction requires a higher fee, or it will not be propagated by the network"))
             return
 
@@ -1415,7 +1415,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             self.on_error(exc_info)
             callback(False)
 
-        task = partial(self.wallet.sign_transaction, tx, password)
+        if self.tx_external_keypairs:
+            task = partial(Transaction.sign, tx, self.tx_external_keypairs)
+        else:
+            task = partial(self.wallet.sign_transaction, tx, password)
         WaitingDialog(self, _('Signing transaction...'), task,
                       on_signed, on_failed)
 
@@ -1558,6 +1561,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             e.setFrozen(False)
         self.set_pay_from([])
         self.rbf_checkbox.setChecked(False)
+        self.tx_external_keypairs = {}
         self.update_status()
         run_hook('do_clear', self)
 
@@ -1745,6 +1749,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         qtVersion = qVersion()
 
         self.balance_label = QLabel("")
+        self.balance_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.balance_label.setStyleSheet("""QLabel { padding: 0 }""")
         sb.addWidget(self.balance_label)
 
         self.search_box = QLineEdit()
@@ -2072,7 +2078,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         return d.run()
 
     def tx_from_text(self, txt):
-        from electrum.transaction import tx_from_str, Transaction
+        from electrum.transaction import tx_from_str
         try:
             tx = tx_from_str(txt)
             return Transaction(tx)
@@ -2236,9 +2242,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         labelsFile = self.getOpenFileName(_("Open labels file"), "*.json")
         if not labelsFile: return
         try:
-            f = open(labelsFile, 'r')
-            data = f.read()
-            f.close()
+            with open(labelsFile, 'r') as f:
+                data = f.read()
             for key, value in json.loads(data).items():
                 self.wallet.set_label(key, value)
             self.show_message(_("Your labels were imported from") + " '%s'" % str(labelsFile))
@@ -2367,14 +2372,20 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         address_e.textChanged.connect(on_address)
         if not d.exec_():
             return
-
+        from electrum.wallet import sweep_preparations
         try:
-            tx = self.wallet.sweep(get_pk(), self.network, self.config, get_address(), None)
+            self.do_clear()
+            coins, keypairs = sweep_preparations(get_pk(), self.network)
+            self.tx_external_keypairs = keypairs
+            self.spend_coins(coins)
+            self.payto_e.setText(get_address())
+            self.spend_max()
+            self.payto_e.setFrozen(True)
+            self.amount_e.setFrozen(True)
         except BaseException as e:
             self.show_message(str(e))
             return
         self.warn_if_watching_only()
-        self.show_transaction(tx)
 
     def _do_import(self, title, msg, func):
         text = text_dialog(self, title, msg + ' :', _('Import'))

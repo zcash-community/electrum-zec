@@ -4,7 +4,8 @@ from binascii import hexlify, unhexlify
 
 from electrum.util import bfh, bh2u
 from electrum.bitcoin import (b58_address_to_hash160, xpub_from_pubkey,
-                              TYPE_ADDRESS, TYPE_SCRIPT, NetworkConstants)
+                              TYPE_ADDRESS, TYPE_SCRIPT, NetworkConstants,
+                              is_segwit_address)
 from electrum.i18n import _
 from electrum.plugins import BasePlugin
 from electrum.transaction import deserialize
@@ -16,7 +17,7 @@ from ..hw_wallet import HW_PluginBase
 # TREZOR initialization methods
 TIM_NEW, TIM_RECOVER, TIM_MNEMONIC, TIM_PRIVKEY = range(0, 4)
 
-class TrezorCompatibleKeyStore(Hardware_KeyStore):
+class KeepKeyCompatibleKeyStore(Hardware_KeyStore):
 
     def get_derivation(self):
         return self.derivation
@@ -58,7 +59,7 @@ class TrezorCompatibleKeyStore(Hardware_KeyStore):
         self.plugin.sign_transaction(self, tx, prev_tx, xpub_path)
 
 
-class TrezorCompatiblePlugin(HW_PluginBase):
+class KeepKeyCompatiblePlugin(HW_PluginBase):
     # Derived classes provide:
     #
     #  class-static variables: client_class, firmware_URL, handler_class,
@@ -168,27 +169,14 @@ class TrezorCompatiblePlugin(HW_PluginBase):
     def _initialize_device(self, settings, method, device_id, wizard, handler):
         item, label, pin_protection, passphrase_protection = settings
 
-        if method == TIM_RECOVER:
-            # FIXME the PIN prompt will appear over this message
-            # which makes this unreadable
-            handler.show_error(_(
-                "You will be asked to enter 24 words regardless of your "
-                "seed's actual length.  If you enter a word incorrectly or "
-                "misspell it, you cannot change it or go back - you will need "
-                "to start again from the beginning.\n\nSo please enter "
-                "the words carefully!"))
-
         language = 'english'
         devmgr = self.device_manager()
         client = devmgr.client_by_id(device_id)
 
         if method == TIM_NEW:
             strength = 64 * (item + 2)  # 128, 192 or 256
-            u2f_counter = 0
-            skip_backup = False
             client.reset_device(True, strength, passphrase_protection,
-                                pin_protection, label, language,
-                                u2f_counter, skip_backup)
+                                pin_protection, label, language)
         elif method == TIM_RECOVER:
             word_count = 6 * (item + 2)  # 12, 18 or 24
             client.step = 0
@@ -352,7 +340,16 @@ class TrezorCompatiblePlugin(HW_PluginBase):
                     txoutputtype.script_type = self.types.PAYTOOPRETURN
                     txoutputtype.op_return_data = address[2:]
                 elif _type == TYPE_ADDRESS:
-                    txoutputtype.script_type = self.types.PAYTOADDRESS
+                    if is_segwit_address(address):
+                        txoutputtype.script_type = self.types.PAYTOWITNESS
+                    else:
+                        addrtype, hash_160 = b58_address_to_hash160(address)
+                        if addrtype == NetworkConstants.ADDRTYPE_P2PKH:
+                            txoutputtype.script_type = self.types.PAYTOADDRESS
+                        elif addrtype == NetworkConstants.ADDRTYPE_P2SH:
+                            txoutputtype.script_type = self.types.PAYTOSCRIPTHASH
+                        else:
+                            raise BaseException('addrtype: ' + str(addrtype))
                     txoutputtype.address = address
 
             outputs.append(txoutputtype)

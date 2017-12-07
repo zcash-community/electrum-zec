@@ -1,19 +1,16 @@
 from struct import pack, unpack
 import hashlib
-import time
 import sys
-import os
 import traceback
 
-import electrum
 from electrum import bitcoin
 from electrum.bitcoin import TYPE_ADDRESS, int_to_hex, var_int
 from electrum.i18n import _
-from electrum.plugins import BasePlugin, hook
-from electrum.keystore import Hardware_KeyStore, parse_xpubkey
-from electrum.transaction import push_script, Transaction
+from electrum.plugins import BasePlugin
+from electrum.keystore import Hardware_KeyStore
+from electrum.transaction import Transaction
 from ..hw_wallet import HW_PluginBase
-from electrum.util import format_satoshis_plain, print_error, is_verbose, bfh, bh2u
+from electrum.util import print_error, is_verbose, bfh, bh2u
 
 try:
     import hid
@@ -241,7 +238,7 @@ class Ledger_KeyStore(Hardware_KeyStore):
         except Exception as e:
             self.give_error(e, True)
         finally:
-            self.handler.clear_dialog()
+            self.handler.finished()
         self.signing = False
         # Parse the ASN.1 signature
         rLength = signature[3]
@@ -379,17 +376,17 @@ class Ledger_KeyStore(Hardware_KeyStore):
                 transactionOutput = outputData['outputData']
                 if outputData['confirmationNeeded']:
                     outputData['address'] = output
-                    self.handler.clear_dialog()
+                    self.handler.finished()
                     pin = self.handler.get_auth( outputData ) # does the authenticate dialog and returns pin
                     if not pin:
                         raise UserWarning()
                     if pin != 'paired':
                         self.handler.show_message(_("Confirmed. Signing Transaction..."))
-                while inputIndex < len(inputs):                
+                while inputIndex < len(inputs):
                     singleInput = [ chipInputs[inputIndex] ]
                     self.get_client().startUntrustedTransaction(False, 0,
                                                             singleInput, redeemScripts[inputIndex])
-                    inputSignature = self.get_client().untrustedHashSign(inputsPaths[inputIndex], pin)
+                    inputSignature = self.get_client().untrustedHashSign(inputsPaths[inputIndex], pin, lockTime=tx.locktime)
                     inputSignature[0] = 0x30 # force for 1.4.9+
                     signatures.append(inputSignature)
                     inputIndex = inputIndex + 1
@@ -403,7 +400,7 @@ class Ledger_KeyStore(Hardware_KeyStore):
                         transactionOutput = outputData['outputData']
                     if outputData['confirmationNeeded']:
                         outputData['address'] = output
-                        self.handler.clear_dialog()
+                        self.handler.finished()
                         pin = self.handler.get_auth( outputData ) # does the authenticate dialog and returns pin
                         if not pin:
                             raise UserWarning()
@@ -424,7 +421,7 @@ class Ledger_KeyStore(Hardware_KeyStore):
             traceback.print_exc(file=sys.stdout)
             self.give_error(e, True)
         finally:
-            self.handler.clear_dialog()
+            self.handler.finished()
 
         for i, txin in enumerate(tx.inputs()):
             signingPos = inputs[i][4]

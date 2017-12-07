@@ -1,8 +1,6 @@
 import os.path
 import time
-import traceback
 import sys
-import threading
 import platform
 import queue
 from collections import namedtuple
@@ -23,7 +21,7 @@ else:
 
 dialogs = []
 
-from electrum.paymentrequest import PR_UNPAID, PR_PAID, PR_UNKNOWN, PR_EXPIRED
+from electrum.paymentrequest import PR_UNPAID, PR_PAID, PR_EXPIRED
 
 pr_icons = {
     PR_UNPAID:":icons/unpaid.png",
@@ -202,7 +200,7 @@ class MessageBoxMixin(object):
     def msg_box(self, icon, parent, title, text, buttons=QMessageBox.Ok,
                 defaultButton=QMessageBox.NoButton):
         parent = parent or self.top_level_window()
-        d = QMessageBox(icon, title, text, buttons, parent)
+        d = QMessageBox(icon, title, str(text), buttons, parent)
         d.setWindowModality(Qt.WindowModal)
         d.setDefaultButton(defaultButton)
         return d.exec_()

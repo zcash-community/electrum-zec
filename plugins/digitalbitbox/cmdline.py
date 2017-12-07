@@ -1,4 +1,4 @@
-from electrum.util import print_msg
+from electrum.plugins import hook
 from .digitalbitbox import DigitalBitboxPlugin
 from ..hw_wallet import CmdLineHandler
 
