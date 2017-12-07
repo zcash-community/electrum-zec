@@ -28,12 +28,13 @@ from decimal import Decimal
 import traceback
 import urllib
 import threading
+import time
+import json
+import urllib.request, urllib.parse, urllib.error
+import queue
 
 from .i18n import _
 
-
-import urllib.request, urllib.parse, urllib.error
-import queue
 
 def inv_dict(d):
     return {v: k for k, v in d.items()}
@@ -74,6 +75,15 @@ class PrintError(object):
 
     def print_msg(self, *msg):
         print_msg("[%s]" % self.diagnostic_name(), *msg)
+
+class CoroutineJob(PrintError):
+    """A job that is run periodically from a thread's main loop.  run() is
+    called from that thread's context.
+    """
+
+    async def run(self):
+        """Called periodically from the thread"""
+        pass
 
 class ThreadJob(PrintError):
     """A job that is run periodically from a thread's main loop.  run() is
@@ -119,6 +129,21 @@ class DaemonThread(threading.Thread, PrintError):
         self.running_lock = threading.Lock()
         self.job_lock = threading.Lock()
         self.jobs = []
+        self.coroutines = []
+
+    def add_coroutines(self, jobs):
+        for i in jobs: assert isinstance(i, CoroutineJob), i.__class__.__name__ + " does not inherit from CoroutineJob"
+        self.coroutines.extend(jobs)
+
+    async def run_coroutines(self):
+        for coroutine in self.coroutines:
+            assert isinstance(coroutine, CoroutineJob)
+            await coroutine.run()
+
+    def remove_coroutines(self, jobs):
+        for i in jobs: assert isinstance(i, CoroutineJob)
+        for job in jobs:
+            self.coroutines.remove(job)
 
     def add_jobs(self, jobs):
         with self.job_lock:
@@ -130,6 +155,7 @@ class DaemonThread(threading.Thread, PrintError):
         # malformed or malicious server responses
         with self.job_lock:
             for job in self.jobs:
+                assert isinstance(job, ThreadJob)
                 try:
                     job.run()
                 except Exception as e:
@@ -582,111 +608,7 @@ def parse_json(message):
 class timeout(Exception):
     pass
 
-import socket
-import json
-import ssl
-import time
 
-
-class SocketPipe:
-    def __init__(self, socket):
-        self.socket = socket
-        self.message = b''
-        self.set_timeout(0.1)
-        self.recv_time = time.time()
-
-    def set_timeout(self, t):
-        self.socket.settimeout(t)
-
-    def idle_time(self):
-        return time.time() - self.recv_time
-
-    def get(self):
-        while True:
-            response, self.message = parse_json(self.message)
-            if response is not None:
-                return response
-            try:
-                data = self.socket.recv(1024)
-            except socket.timeout:
-                raise timeout
-            except ssl.SSLError:
-                raise timeout
-            except socket.error as err:
-                if err.errno == 60:
-                    raise timeout
-                elif err.errno in [11, 35, 10035]:
-                    print_error("socket errno %d (resource temporarily unavailable)"% err.errno)
-                    time.sleep(0.2)
-                    raise timeout
-                else:
-                    print_error("pipe: socket error", err)
-                    data = b''
-            except:
-                traceback.print_exc(file=sys.stderr)
-                data = b''
-
-            if not data:  # Connection closed remotely
-                return None
-            self.message += data
-            self.recv_time = time.time()
-
-    def send(self, request):
-        out = json.dumps(request) + '\n'
-        out = out.encode('utf8')
-        self._send(out)
-
-    def send_all(self, requests):
-        out = b''.join(map(lambda x: (json.dumps(x) + '\n').encode('utf8'), requests))
-        self._send(out)
-
-    def _send(self, out):
-        while out:
-            try:
-                sent = self.socket.send(out)
-                out = out[sent:]
-            except ssl.SSLError as e:
-                print_error("SSLError:", e)
-                time.sleep(0.1)
-                continue
-            except OSError as e:
-                print_error("OSError", e)
-                time.sleep(0.1)
-                continue
-
-
-class QueuePipe:
-
-    def __init__(self, send_queue=None, get_queue=None):
-        self.send_queue = send_queue if send_queue else queue.Queue()
-        self.get_queue = get_queue if get_queue else queue.Queue()
-        self.set_timeout(0.1)
-
-    def get(self):
-        try:
-            return self.get_queue.get(timeout=self.timeout)
-        except queue.Empty:
-            raise timeout
-
-    def get_all(self):
-        responses = []
-        while True:
-            try:
-                r = self.get_queue.get_nowait()
-                responses.append(r)
-            except queue.Empty:
-                break
-        return responses
-
-    def set_timeout(self, t):
-        self.timeout = t
-
-    def send(self, request):
-        self.send_queue.put(request)
-
-    def send_all(self, requests):
-        for request in requests:
-            self.send(request)
 
 
 def check_www_dir(rdir):

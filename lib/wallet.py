@@ -976,14 +976,14 @@ class Abstract_Wallet(PrintError):
             port = int(config.get("lightning_port"))
             assert port is not None
             self.lightningworker = LightningWorker(lambda: port, lambda: self, lambda: network, lambda: config)
-            network.add_jobs([self.verifier, self.synchronizer, self.lightning, self.lightningworker])
+            network.add_coroutines([self.verifier, self.synchronizer, self.lightning, self.lightningworker])
         else:
             self.verifier = None
             self.synchronizer = None
 
     def stop_threads(self):
         if self.network:
-            self.network.remove_jobs([self.synchronizer, self.verifier, self.lightning, self.lightningworker])
+            self.network.remove_coroutines([self.synchronizer, self.verifier, self.lightning, self.lightningworker])
             self.synchronizer.release()
             self.synchronizer = None
             self.verifier = None
