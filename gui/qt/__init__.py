@@ -24,8 +24,8 @@
 # SOFTWARE.
 
 import signal
-import traceback
 import sys
+import traceback
 
 try:
     import PyQt5

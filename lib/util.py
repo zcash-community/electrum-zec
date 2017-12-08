@@ -32,6 +32,7 @@ import time
 import json
 import urllib.request, urllib.parse, urllib.error
 import queue
+import asyncio
 
 from .i18n import _
 
@@ -75,6 +76,15 @@ class PrintError(object):
 
     def print_msg(self, *msg):
         print_msg("[%s]" % self.diagnostic_name(), *msg)
+
+class ForeverCoroutineJob(PrintError):
+    """A job that is run from a thread's main loop.  run() is
+    called from that thread's context.
+    """
+
+    async def run(self):
+        """Called once from the thread"""
+        pass
 
 class CoroutineJob(PrintError):
     """A job that is run periodically from a thread's main loop.  run() is
@@ -130,10 +140,23 @@ class DaemonThread(threading.Thread, PrintError):
         self.job_lock = threading.Lock()
         self.jobs = []
         self.coroutines = []
+        self.forever_coroutines = []
+        self.forever_coroutines_task = None
 
     def add_coroutines(self, jobs):
         for i in jobs: assert isinstance(i, CoroutineJob), i.__class__.__name__ + " does not inherit from CoroutineJob"
         self.coroutines.extend(jobs)
+
+    def add_forever_coroutines(self, jobs):
+        for i in jobs: assert isinstance(i, ForeverCoroutineJob), i.__class__.__name__ + " does not inherit from ForeverCoroutineJob"
+        self.forever_coroutines.extend(jobs)
+
+    def run_forever_coroutines(self):
+        self.forever_coroutines_task = asyncio.ensure_future(asyncio.gather(*[i.run() for i in self.forever_coroutines]))
+        return self.forever_coroutines_task
+
+    def kill_forever_coroutines(self):
+        self.forever_coroutines_task.cancel()
 
     async def run_coroutines(self):
         for coroutine in self.coroutines:

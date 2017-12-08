@@ -39,7 +39,6 @@ def serialize_header(res):
     return s
 
 def deserialize_header(s, height):
-    assert len(s) > 0
     hex_to_int = lambda s: int('0x' + bh2u(s[::-1]), 16)
     h = {}
     h['version'] = hex_to_int(s[0:4])

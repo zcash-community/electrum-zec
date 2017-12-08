@@ -972,18 +972,21 @@ class Abstract_Wallet(PrintError):
             self.prepare_for_verifier()
             self.verifier = SPV(self.network, self)
             self.synchronizer = Synchronizer(self, network)
-            self.lightning = LightningRPC()
+            #self.lightning = LightningRPC()
             port = int(config.get("lightning_port"))
             assert port is not None
-            self.lightningworker = LightningWorker(lambda: port, lambda: self, lambda: network, lambda: config)
-            network.add_coroutines([self.verifier, self.synchronizer, self.lightning, self.lightningworker])
+            #self.lightningworker = LightningWorker(lambda: port, lambda: self, lambda: network, lambda: config)
+            network.add_coroutines([self.verifier, self.synchronizer])
+            #network.add_forever_coroutines([self.lightning, self.lightningworker])
+            #print("added forever coroutines")
         else:
             self.verifier = None
             self.synchronizer = None
 
     def stop_threads(self):
         if self.network:
-            self.network.remove_coroutines([self.synchronizer, self.verifier, self.lightning, self.lightningworker])
+            self.network.remove_coroutines([self.synchronizer, self.verifier])
+            self.network.kill_forever_coroutines()
             self.synchronizer.release()
             self.synchronizer = None
             self.verifier = None

@@ -18,7 +18,7 @@ from . import transaction
 
 import queue
 
-from .util import ThreadJob
+from .util import ForeverCoroutineJob
 import socks
 import socket
 import time
@@ -26,6 +26,8 @@ import time
 import threading
 import json
 import base64
+
+import asyncio
 
 WALLET = None
 NETWORK = None
@@ -665,35 +667,35 @@ def computeInputScript(tx, signdesc):
 from collections import namedtuple
 QueueItem = namedtuple("QueueItem", ["methodName", "args"])
 
-class LightningRPC(ThreadJob):
+class LightningRPC(ForeverCoroutineJob):
     def __init__(self):
         super(LightningRPC, self).__init__()
-        self.queue = queue.Queue()
+        self.queue = asyncio.Queue()
     # overridden
-    def run(self):
-        try:
-            qitem = self.queue.get(block=False)
-        except queue.Empty:
-            pass
-        else:
-            def call(qitem):
-                client = Server("http://" + machine + ":8090")
-                result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
-                toprint = result
-                try:
-                    if result["stderr"] == "" and result["returncode"] == 0:
-                        toprint = json.loads(result["stdout"])
-                except:
-                    pass
-                self.console.newResult.emit(json.dumps(toprint, indent=4))
-            threading.Thread(target=call, args=(qitem, )).start()
+    async def run(self):
+        while True:
+                print("rpc loop iter")
+                qitem = await self.queue.get()
+                def call(qitem):
+                    client = Server("http://" + machine + ":8090")
+                    result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
+                    toprint = result
+                    try:
+                        if result["stderr"] == "" and result["returncode"] == 0:
+                            toprint = json.loads(result["stdout"])
+                    except:
+                        pass
+                    self.console.newResult.emit(json.dumps(toprint, indent=4))
+                threading.Thread(target=call, args=(qitem, )).start()
     def setConsole(self, console):
         self.console = console
 
 def lightningCall(rpc, methodName):
-    def fun(*args):
-        rpc.queue.put(QueueItem(methodName, args))
-    return fun
+    async def fun(*args):
+        await rpc.queue.put(QueueItem(methodName, args))
+    def fun2(*args):
+        return asyncio.ensure_future(fun(*args))
+    return fun2
 
 class LightningUI():
     def __init__(self, lightningGetter):
@@ -812,7 +814,7 @@ class Copier:
 
 NEED_REQ, GOT_REQ, NEED_REPLY, GOT_REPLY = 0, 1, 2, 3
 
-class LightningWorker(ThreadJob):
+class LightningWorker(ForeverCoroutineJob):
     def __init__(self, port, wallet, network, config):
         global privateKeyHash
         super(LightningWorker, self).__init__()
@@ -840,34 +842,13 @@ class LightningWorker(ThreadJob):
         self.state = NEED_REQ
         self.num = 0
 
-    def run(self):
+    async def run(self):
         global WALLET, NETWORK
         global CONFIG
-
-        if self.state == NEED_REQ:
-            self.num = self.num + 1
-            self.num %= 10
-            if self.num != 9:
-                return
 
         WALLET = self.wallet()
         NETWORK = self.network()
         CONFIG = self.config()
-
-
-        if self.copier:
-            if self.state == NEED_REQ:
-                if self.copier.copy_request():
-                    self.state = GOT_REQ
-            elif self.state == GOT_REQ:
-                self.server.handle_request()
-                self.server.server_close()
-                self.server = get_server(self.port())
-                self.server.timeout = 1
-                self.state = NEED_REPLY
-            elif self.state == NEED_REPLY:
-                if self.copier.get_reply():
-                    self.state = GOT_REPLY
-            elif self.state == GOT_REPLY:
-                if self.copier.send_reply():
-                    self.state = NEED_REQ
+        while True:
+            print("work loop iter")
+            await asyncio.sleep(1)

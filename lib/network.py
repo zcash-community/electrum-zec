@@ -1013,6 +1013,7 @@ class Network(util.DaemonThread):
 
     def run(self):
         self.loop = asyncio.new_event_loop()
+        #asyncio.set_event_loop(self.loop)
         for i in self.run_on_start:
             asyncio.ensure_future(i(future), loop=self.loop)
             loop.run_until_complete(future)
@@ -1027,6 +1028,8 @@ class Network(util.DaemonThread):
 
         run_future = asyncio.Future(loop=self.loop)
         asyncio.ensure_future(self.run_async(run_future), loop=self.loop)
+
+        #forever = self.run_forever_coroutines()
 
         combined_task = asyncio.gather(network_job_future, run_future, loop=self.loop)
         self.loop.run_until_complete(combined_task)
