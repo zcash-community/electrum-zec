@@ -173,7 +173,6 @@ class Interface(util.PrintError):
             try:
                 obj += await reader.readuntil(b"\n")
             except asyncio.LimitOverrunError as e:
-                print("LimitOverrunError with", e.consumed, "consumed")
                 obj += await reader.read(e.consumed)
             except asyncio.streams.IncompleteReadError as e:
                 return None
