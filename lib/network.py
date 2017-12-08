@@ -162,7 +162,6 @@ class Network(util.DaemonThread):
     """
 
     def __init__(self, config=None):
-        self.run_on_start = []
         if config is None:
             config = {}  # Do not use mutables as default values!
         util.DaemonThread.__init__(self)
@@ -436,16 +435,16 @@ class Network(util.DaemonThread):
                 await self.stop_network()
                 self.default_server = server
                 await self.start_network(protocol, proxy)
-            asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
+            asyncio.run_coroutine_threadsafe(job(), self.loop)
         elif self.default_server != server:
             async def job():
                 await self.switch_to_interface(server)
-            asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
+            asyncio.run_coroutine_threadsafe(job(), self.loop)
         else:
             async def job():
                 await self.switch_lagging_interface()
                 self.notify('updated')
-            asyncio.run_coroutine_threadsafe(job(), loop=self.loop)
+            asyncio.run_coroutine_threadsafe(job(), self.loop)
 
     async def switch_to_random_interface(self):
         '''Switch to a random connected server other than the current one'''
@@ -634,10 +633,7 @@ class Network(util.DaemonThread):
         async def job(future):
             await self.pending_sends.put((messages, callback))
             if future: future.set_result("put pending send: " + repr(messages))
-        if self.loop.is_closed():
-            self.run_on_start.extend([job])
-        else:
-            asyncio.run_coroutine_threadsafe(job(None), loop=self.loop)
+        asyncio.run_coroutine_threadsafe(job(None), self.loop)
 
     async def process_pending_sends(self):
         # Requests needs connectivity.  If we don't have an interface,
@@ -694,7 +690,7 @@ class Network(util.DaemonThread):
     async def new_interface(self, server):
         # todo: get tip first, then decide which checkpoint to use.
         self.add_recent_server(server)
-        interface = Interface(server, self.loop, self.config.path, self.proxy)
+        interface = Interface(server, self.config.path, self.proxy)
         interface.blockchain = None
         interface.tip_header = None
         interface.tip = 0
@@ -879,7 +875,7 @@ class Network(util.DaemonThread):
             except:
                 traceback.print_exc()
                 print("FATAL ERROR ^^^")
-        return asyncio.ensure_future(job(), loop=self.loop)
+        return asyncio.ensure_future(job())
 
     def make_process_responses_job(self, interface):
         async def job():
@@ -893,7 +889,7 @@ class Network(util.DaemonThread):
             except BaseException:
                 traceback.print_exc()
                 print("FATAL ERROR in process_responses")
-        return asyncio.ensure_future(job(), loop=self.loop)
+        return asyncio.ensure_future(job())
 
     def make_process_pending_sends_job(self):
         async def job():
@@ -905,7 +901,7 @@ class Network(util.DaemonThread):
             except BaseException as e:
                 traceback.print_exc()
                 print("FATAL ERROR in process_pending_sends")
-        return asyncio.ensure_future(job(), loop=self.loop)
+        return asyncio.ensure_future(job())
 
     def init_headers_file(self):
         b = self.blockchains[0]
@@ -944,8 +940,8 @@ class Network(util.DaemonThread):
                     print("interface did not work")
                     self.connection_down(interface.server)
                     continue
-                gathered = asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface), loop=self.loop)
-                interface.jobs = asyncio.ensure_future(gathered, loop=self.loop)
+                gathered = asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface))
+                interface.jobs = asyncio.ensure_future(gathered)
                 def cb(fut):
                     fut.exception()
                     try:
@@ -973,8 +969,10 @@ class Network(util.DaemonThread):
                     # Send pings and shut down stale interfaces
                     # must use copy of values
                     if interface.has_timed_out():
+                        print("timed out")
                         self.connection_down(interface.server)
                     elif interface.ping_required():
+                        print("ping required")
                         params = [ELECTRUM_VERSION, PROTOCOL_VERSION]
                         await self.queue_request('server.version', params, interface)
             except CancelledError:
@@ -982,7 +980,7 @@ class Network(util.DaemonThread):
             except:
                 traceback.print_exc()
                 print("FATAL ERRROR in ping_job")
-        return asyncio.ensure_future(job(), loop=self.loop)
+        return asyncio.ensure_future(job())
 
     async def maintain_interfaces(self):
         now = time.time()
@@ -1012,34 +1010,33 @@ class Network(util.DaemonThread):
 
 
     def run(self):
-        self.loop = asyncio.new_event_loop()
-        for i in self.run_on_start:
-            asyncio.ensure_future(i(future), loop=self.loop)
-            loop.run_until_complete(future)
-            future.exception()
-            print("ran on start", future.result())
-        self.pending_sends = asyncio.Queue(loop=self.loop)
-        self.queued_interfaces = asyncio.Queue(loop=self.loop)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop) # this does not set the loop on the qt thread
+        self.loop = loop # so we store it in the instance too
+
+        self.init_headers_file()
+        while self.is_running() and self.downloading_headers:
+            time.sleep(1)
+
+        self.pending_sends = asyncio.Queue()
+        self.queued_interfaces = asyncio.Queue()
 
         if not self.network_job:
-            network_job_future = asyncio.Future(loop=self.loop)
-            self.network_job = asyncio.ensure_future(self.make_network_job(network_job_future), loop=self.loop)
+            network_job_future = asyncio.Future()
+            self.network_job = asyncio.ensure_future(self.make_network_job(network_job_future))
 
-        run_future = asyncio.Future(loop=self.loop)
-        asyncio.ensure_future(self.run_async(run_future), loop=self.loop)
+        run_future = asyncio.Future()
+        asyncio.ensure_future(self.run_async(run_future))
 
-        combined_task = asyncio.gather(network_job_future, run_future, loop=self.loop)
-        self.loop.run_until_complete(combined_task)
+        combined_task = asyncio.gather(network_job_future, run_future)
+        loop.run_until_complete(combined_task)
         combined_task.exception()
         print("combined task result", combined_task.result())
 
-        self.loop.close()
+        loop.close()
 
     async def run_async(self, future):
         try:
-            self.init_headers_file()
-            while self.is_running() and self.downloading_headers:
-                time.sleep(1)
             while self.is_running():
                 await asyncio.sleep(1)
                 await self.maintain_requests()
@@ -1109,7 +1106,7 @@ class Network(util.DaemonThread):
             self.config.set_key('blockchain_index', index)
             for i in self.interfaces.values():
                 if i.blockchain == blockchain:
-                    asyncio.run_coroutine_threadsafe(self.switch_to_interface(i.server), loop=self.loop)
+                    asyncio.run_coroutine_threadsafe(self.switch_to_interface(i.server), self.loop)
                     break
         else:
             raise BaseException('blockchain not found', index)
