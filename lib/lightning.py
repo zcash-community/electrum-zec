@@ -244,15 +244,15 @@ def SendOutputs(json):
     m.resultHash = tx.txid()
     return json_format.MessageToJson(m)
 
-def IsSynced(json):
+def isSynced():
     global NETWORK
     local_height, server_height = NETWORK.get_status_value("updated")
-    synced = NETWORK.is_up_to_date() and local_height >= server_height
-    if not synced:
-        print("local_height", local_height)
-        print("server_height", server_height)
+    synced = server_height != 0 and NETWORK.is_up_to_date() and local_height >= server_height
+    return synced, local_height, server_height
+
+def IsSynced(json):
     m = rpc_pb2.IsSyncedResponse()
-    m.synced = synced
+    m.synced, _, _ = isSynced()
     return json_format.MessageToJson(m)
 
 def SignMessage(json):
@@ -637,7 +637,6 @@ class LightningRPC(ForeverCoroutineJob):
     async def run(self):
       print("RPC STARTED")
       while True:
-        print("rpc loop iter")
         try:
             qitem = self.queue.get(block=False)
         except queue.Empty:
@@ -667,6 +666,9 @@ class LightningUI():
     def __init__(self, lightningGetter):
         self.rpc = lightningGetter
     def __getattr__(self, nam):
+        synced, local, server = isSynced()
+        if not synced:
+            return "Not synced yet: local/server: {}/{}".format(local, server)
         return lightningCall(self.rpc(), nam)
 
 privateKeyHash = None
@@ -674,9 +676,7 @@ ip = lambda: "{}.{}.{}.{}".format(privateKeyHash[0], privateKeyHash[1], privateK
 port = lambda: int.from_bytes(privateKeyHash[4:6], "big")
 
 class LightningWorker(ForeverCoroutineJob):
-    def __init__(self, port, wallet, network, config):
-        # TODO remove unused port
-
+    def __init__(self, wallet, network, config):
         global privateKeyHash
         super(LightningWorker, self).__init__()
         self.server = None
@@ -692,10 +692,22 @@ class LightningWorker(ForeverCoroutineJob):
         global WALLET, NETWORK
         global CONFIG
 
+        wasAlreadyUpToDate = False
+
         while True:
             WALLET = self.wallet()
             NETWORK = self.network()
             CONFIG = self.config()
+
+            synced, local, server = isSynced()
+            if not synced:
+                await asyncio.sleep(5)
+                continue
+            else:
+                if not wasAlreadyUpToDate:
+                    print("UP TO DATE FOR THE FIRST TIME")
+                    print(NETWORK.get_status_value("updated"))
+                wasAlreadyUpToDate = True
 
             reader, writer = await asyncio.open_connection(machine, 1080)
             writer.write(b"MAGIC")

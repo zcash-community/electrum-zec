@@ -974,9 +974,7 @@ class Abstract_Wallet(PrintError):
             self.synchronizer = Synchronizer(self, network)
 
             self.lightning = LightningRPC()
-            port = int(network.config.get("lightning_port"))
-            assert port is not None
-            self.lightningworker = LightningWorker(lambda: port, lambda: self, lambda: network, lambda: network.config)
+            self.lightningworker = LightningWorker(lambda: self, lambda: network, lambda: network.config)
             network.set_forever_coroutines([self.lightning, self.lightningworker])
 
             network.add_coroutines([self.verifier, self.synchronizer])

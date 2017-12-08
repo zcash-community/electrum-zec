@@ -831,7 +831,6 @@ def add_global_options(parser):
     group.add_argument("-w", "--wallet", dest="wallet_path", help="wallet path")
     group.add_argument("--testnet", action="store_true", dest="testnet", default=False, help="Use Testnet")
     group.add_argument("--simnet", action="store_true", dest="simnet", default=False, help="Use Simnet")
-    group.add_argument("--lightning_port", dest="lightning_port", default=None, help="Lightning RPC port to listen on. Socat copier to be launched on this to bridge to remote.")
 
 def get_parser():
     # create main parser
