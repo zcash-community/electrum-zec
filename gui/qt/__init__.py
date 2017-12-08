@@ -209,7 +209,7 @@ class ElectrumGui:
                 wizard.terminate()
                 if not wallet:
                     return
-                wallet.start_threads(self.daemon.network, self.config)
+                wallet.start_threads(self.daemon.network)
                 self.daemon.add_wallet(wallet)
             w = self.create_window_for_wallet(wallet)
         if uri:

@@ -80,7 +80,6 @@ def get_server(config):
             server.ping()
             return server
         except Exception as e:
-            print(e)
             print_error("[get_server]", e)
         if not create_time or create_time < time.time() - 1.0:
             return None
@@ -218,7 +217,7 @@ class Daemon(DaemonThread):
         if storage.get_action():
             return
         wallet = Wallet(storage)
-        wallet.start_threads(self.network, self.config)
+        wallet.start_threads(self.network)
         self.wallets[path] = wallet
         return wallet
 

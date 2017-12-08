@@ -966,16 +966,16 @@ class Abstract_Wallet(PrintError):
                 self.print_error("removing transaction", tx_hash)
                 self.transactions.pop(tx_hash)
 
-    def start_threads(self, network, config):
+    def start_threads(self, network):
         self.network = network
         if self.network is not None:
             self.prepare_for_verifier()
             self.verifier = SPV(self.network, self)
             self.synchronizer = Synchronizer(self, network)
             #self.lightning = LightningRPC()
-            port = int(config.get("lightning_port"))
+            port = int(network.config.get("lightning_port"))
             assert port is not None
-            #self.lightningworker = LightningWorker(lambda: port, lambda: self, lambda: network, lambda: config)
+            #self.lightningworker = LightningWorker(lambda: port, lambda: self, lambda: network, lambda: network.config)
             network.add_coroutines([self.verifier, self.synchronizer])
             #network.add_forever_coroutines([self.lightning, self.lightningworker])
             #print("added forever coroutines")

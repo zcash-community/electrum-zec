@@ -16,8 +16,6 @@ from .bitcoin import EC_KEY
 from . import bitcoin
 from . import transaction
 
-import queue
-
 from .util import ForeverCoroutineJob
 import socks
 import socket

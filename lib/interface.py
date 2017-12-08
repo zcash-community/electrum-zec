@@ -141,6 +141,7 @@ class Interface(util.PrintError):
                         open_coro = aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), loop=self.loop)
                         self.reader, self.writer = await asyncio.wait_for(open_coro, 5, loop=self.loop)
                     else:
+                        asyncio.set_event_loop(self.loop)
                         ssl_in_socks_coro = sslInSocksReaderWriter(self.addr, self.auth, self.host, self.port, ca_certs)
                         self.reader, self.writer = await asyncio.wait_for(ssl_in_socks_coro, 10, loop=self.loop)
                 else:
@@ -177,7 +178,6 @@ class Interface(util.PrintError):
             except asyncio.LimitOverrunError as e:
                 print("LimitOverrunError with", e.consumed, "consumed")
                 obj += await reader.read(e.consumed)
-                await asyncio.sleep(1)
             except asyncio.streams.IncompleteReadError as e:
                 return None
             try:
