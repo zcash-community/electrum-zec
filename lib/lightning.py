@@ -3,9 +3,7 @@ import struct
 import traceback
 sys.path.insert(0, "lib/ln")
 from .ln import rpc_pb2
-import os
 
-from jsonrpclib.SimpleJSONRPCServer import SimpleJSONRPCServer
 from jsonrpclib import Server
 from google.protobuf import json_format
 import binascii
@@ -19,9 +17,6 @@ from . import transaction
 import queue
 
 from .util import ForeverCoroutineJob
-import socks
-import socket
-import time
 
 import threading
 import json
@@ -281,39 +276,6 @@ def SignMessage(json):
     m.error = ""
     m.success = True
     return json_format.MessageToJson(m)
-
-def wrap(fun):
-    def wrapped(*args, **kwargs):
-        try:
-            return fun(*args, **kwargs)
-        except Exception as e:
-            # jsonRPC doesn't report the full trace, so we do it
-            traceback.print_exc()
-            raise e
-    # this is needed for the jsonRPC library to know which method this is.
-    # there is an alternative register_function call with a string passed.
-    wrapped.__name__ = fun.__name__
-    return wrapped
-
-def get_server(port):
-    server = SimpleJSONRPCServer(('localhost', port))
-    server.register_function(wrap(FetchRootKey))
-    server.register_function(wrap(ConfirmedBalance))
-    server.register_function(wrap(NewAddress))
-    server.register_function(wrap(ListUnspentWitness))
-    server.register_function(wrap(SetHdSeed))
-    server.register_function(wrap(NewRawKey))
-    server.register_function(wrap(FetchInputInfo))
-    server.register_function(wrap(ComputeInputScript))
-    server.register_function(wrap(SignOutputRaw))
-    server.register_function(wrap(PublishTransaction))
-    server.register_function(wrap(LockOutpoint))
-    server.register_function(wrap(UnlockOutpoint))
-    server.register_function(wrap(ListTransactionDetails))
-    server.register_function(wrap(SendOutputs))
-    server.register_function(wrap(IsSynced))
-    server.register_function(wrap(SignMessage))
-    return server
 
 def LEtobytes(x, l):
     if l == 2:
@@ -711,89 +673,13 @@ privateKeyHash = None
 ip = lambda: "{}.{}.{}.{}".format(privateKeyHash[0], privateKeyHash[1], privateKeyHash[2], privateKeyHash[3])
 port = lambda: int.from_bytes(privateKeyHash[4:6], "big")
 
-# copier connects to the server in LightningWorker and to the SOCKS server
-# and copies between them
-class Copier:
-    def __init__(self, lightningWorkerPort):
-        self.lightningWorkerPort = lightningWorkerPort
-        self.sockSocket = socks.socksocket()
-        self.reply = None
-        self.method = None
-    def connect_local(self):
-        self.localSocket = socket.socket()
-        self.localSocket.settimeout(1)
-        try:
-          self.localSocket.connect(("localhost", self.lightningWorkerPort))
-        except Exception as e:
-          print("during connect")
-          traceback.print_exc()
-    def connect_socksocket(self):
-        self.sockSocket = socks.socksocket()
-        self.sockSocket.set_proxy(socks.SOCKS4, machine, 1080)
-        self.sockSocket.settimeout(1)
-        self.sockSocket.connect((ip(), port()))
-        self.sockSocket.setblocking(False)
-
-    def copy_request(self):
-        bajts = b''
-        try:
-          bajts = self.sockSocket.recv(4096)
-        except OSError as e:
-          if e.errno == 11: # resource temporarily unavailable
-            return False
-          print("could not contact sockSocket")
-          assert e.errno == 107 # transport endpoint not connected
-          self.connect_socksocket()
-          return False
-        except BlockingIOError as e:
-          assert e.errno == 11
-          print("blocking, wait")
-          return False
-        if bajts == b'':
-          print("read nothing!")
-          sys.exit(1)
-          return False
-        self.connect_local()
-        self.method = json.loads(bajts.decode("ascii").split("\n")[-1].strip())["method"]
-        self.localSocket.sendall(bajts)
-        self.localSocket.shutdown(socket.SHUT_WR)
-        print("sent ", bajts)
-        return True
-    def get_reply(self):
-        try:
-          self.reply = self.localSocket.recv(4096)
-        except BlockingIOError as e:
-          assert e.errno == 11
-          assert False, "could not read reply"
-        if self.reply == b"": return False
-        print(self.method)
-        print(self.reply)
-        #if self.method == "IsSynced":
-        #    assert json.loads(self.reply.decode("ascii").split("\n")[-1].strip())["result"] != "{}"
-        return True
-    def send_reply(self):
-        if self.reply is None or self.reply == b"":
-          print("no reply")
-          sys.exit(1)
-        self.sockSocket.sendall(self.reply)
-        try:
-          self.sockSocket.shutdown(socket.SHUT_RDWR)
-        except OSError as e:
-          print("could not contact sockSocket")
-          assert e.errno == 107 # transport endpoint not connected
-          self.connect_socksocket()
-          return False
-        self.connect_socksocket()
-        return True
-
-NEED_REQ, GOT_REQ, NEED_REPLY, GOT_REPLY = 0, 1, 2, 3
-
 class LightningWorker(ForeverCoroutineJob):
     def __init__(self, port, wallet, network, config):
+        # TODO remove unused port
+
         global privateKeyHash
         super(LightningWorker, self).__init__()
         self.server = None
-        self.port = port
         self.wallet = wallet
         self.network = network
         self.config = config
@@ -801,28 +687,54 @@ class LightningWorker(ForeverCoroutineJob):
 
         deser = bitcoin.deserialize_xpub(wallet().keystore.xpub)
         assert deser[0] == "p2wpkh", deser
-        self.copier = None
-        try:
-          self.copier = Copier(self.port())
-        except socks.ProxyConnectionError:
-          print("proxy conn error")
-        except Exception as e:
-          traceback.print_exc()
-          print("could not create copier")
-        self.server = get_server(self.port())
-        self.server.timeout = 1
-        #self.server.server_close()
-
-        self.state = NEED_REQ
-        self.num = 0
 
     async def run(self):
         global WALLET, NETWORK
         global CONFIG
 
-        WALLET = self.wallet()
-        NETWORK = self.network()
-        CONFIG = self.config()
         while True:
-            print("work loop iter")
-            await asyncio.sleep(1)
+            WALLET = self.wallet()
+            NETWORK = self.network()
+            CONFIG = self.config()
+
+            reader, writer = await asyncio.open_connection(machine, 1080)
+            writer.write(b"MAGIC")
+            writer.write(privateKeyHash[:6])
+            await writer.drain()
+            data = b""
+            while True:
+              try:
+                json.loads(data)
+              except:
+                data += await reader.read(1)
+              else:
+                break
+            obj = json.loads(data)
+
+            methods = [FetchRootKey
+            ,ConfirmedBalance
+            ,NewAddress
+            ,ListUnspentWitness
+            ,SetHdSeed
+            ,NewRawKey
+            ,FetchInputInfo
+            ,ComputeInputScript
+            ,SignOutputRaw
+            ,PublishTransaction
+            ,LockOutpoint
+            ,UnlockOutpoint
+            ,ListTransactionDetails
+            ,SendOutputs
+            ,IsSynced
+            ,SignMessage]
+            result = None
+            for method in methods:
+                if method.__name__ == obj["method"]:
+                    result = method(obj["params"][0])
+                    break
+            if result is None:
+                writer.write(json.dumps({"id":obj["id"],"error": "invalid method"}).encode("ascii"))
+            else:
+                writer.write(json.dumps({"id":obj["id"],"result":result}).encode("ascii"))
+            await writer.drain()
+            writer.close()
