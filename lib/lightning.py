@@ -16,6 +16,8 @@ from .bitcoin import EC_KEY
 from . import bitcoin
 from . import transaction
 
+import queue
+
 from .util import ForeverCoroutineJob
 import socks
 import socket
@@ -668,68 +670,42 @@ QueueItem = namedtuple("QueueItem", ["methodName", "args"])
 class LightningRPC(ForeverCoroutineJob):
     def __init__(self):
         super(LightningRPC, self).__init__()
-        self.queue = asyncio.Queue()
+        self.queue = queue.Queue()
     # overridden
     async def run(self):
-        while True:
-                print("rpc loop iter")
-                qitem = await self.queue.get()
-                def call(qitem):
-                    client = Server("http://" + machine + ":8090")
-                    result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
-                    toprint = result
-                    try:
-                        if result["stderr"] == "" and result["returncode"] == 0:
-                            toprint = json.loads(result["stdout"])
-                    except:
-                        pass
-                    self.console.newResult.emit(json.dumps(toprint, indent=4))
-                threading.Thread(target=call, args=(qitem, )).start()
+      print("RPC STARTED")
+      while True:
+        print("rpc loop iter")
+        try:
+            qitem = self.queue.get(block=False)
+        except queue.Empty:
+            await asyncio.sleep(1)
+            pass
+        else:
+            def call(qitem):
+                client = Server("http://" + machine + ":8090")
+                result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
+                toprint = result
+                try:
+                    if result["stderr"] == "" and result["returncode"] == 0:
+                        toprint = json.loads(result["stdout"])
+                except:
+                    pass
+                self.console.newResult.emit(json.dumps(toprint, indent=4))
+            threading.Thread(target=call, args=(qitem, )).start()
     def setConsole(self, console):
         self.console = console
 
 def lightningCall(rpc, methodName):
-    async def fun(*args):
-        await rpc.queue.put(QueueItem(methodName, args))
-    def fun2(*args):
-        return asyncio.ensure_future(fun(*args))
-    return fun2
+    def fun(*args):
+        rpc.queue.put(QueueItem(methodName, args))
+    return fun
 
 class LightningUI():
     def __init__(self, lightningGetter):
         self.rpc = lightningGetter
     def __getattr__(self, nam):
         return lightningCall(self.rpc(), nam)
-
-def test_lightning(wallet, network, config, port):
-    global WALLET, NETWORK
-    global CONFIG
-
-    WALLET = wallet
-    NETWORK = network
-    CONFIG = config
-
-    assert networ is not None
-
-    assert len(bitcoin.DEFAULT_SERVERS) == 1, bitcoin.DEFAULT_SERVERS
-    wallet.synchronize()
-    print("WAITING!!!!")
-    wallet.wait_until_synchronized()
-    print("done")
-
-    deser = bitcoin.deserialize_xpub(wallet.keystore.xpub)
-    assert deser[0] == "p2wpkh", deser
-
-    pubk = wallet.get_unused_address()
-    with open("/tmp/{}address".format(port), "w") as f:
-        f.write(pubk)
-    #K_compressed = bytes(bytearray.fromhex(wallet.get_public_keys(pubk)[0]))
-    #assert len(K_compressed) == 33, len(K_compressed)
-    #pubkeystring = binascii.hexlify( K_compressed).decode("utf-8")
-    #assert wallet.pubkeys_to_address(pubkeystring) in wallet.get_addresses()
-
-    server = get_server(int(port))
-    server.serve_forever()
 
 privateKeyHash = None
 ip = lambda: "{}.{}.{}.{}".format(privateKeyHash[0], privateKeyHash[1], privateKeyHash[2], privateKeyHash[3])

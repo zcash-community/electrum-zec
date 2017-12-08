@@ -140,19 +140,27 @@ class DaemonThread(threading.Thread, PrintError):
         self.job_lock = threading.Lock()
         self.jobs = []
         self.coroutines = []
-        self.forever_coroutines = []
         self.forever_coroutines_task = None
 
     def add_coroutines(self, jobs):
         for i in jobs: assert isinstance(i, CoroutineJob), i.__class__.__name__ + " does not inherit from CoroutineJob"
         self.coroutines.extend(jobs)
 
-    def add_forever_coroutines(self, jobs):
+    def set_forever_coroutines(self, jobs):
         for i in jobs: assert isinstance(i, ForeverCoroutineJob), i.__class__.__name__ + " does not inherit from ForeverCoroutineJob"
-        self.forever_coroutines.extend(jobs)
+        async def put():
+            await self.forever_coroutines_queue.put(jobs)
+        asyncio.run_coroutine_threadsafe(put(), self.loop)
 
     def run_forever_coroutines(self):
-        self.forever_coroutines_task = asyncio.ensure_future(asyncio.gather(*[i.run() for i in self.forever_coroutines]))
+        self.forever_coroutines_queue = asyncio.Queue() # making queue here because __init__ is called from non-network thread
+        self.loop = asyncio.get_event_loop()
+        async def getFromQueueAndStart():
+            jobs = await self.forever_coroutines_queue.get()
+            print("GOT FOREVER JOBS")
+            await asyncio.gather(*[i.run() for i in jobs])
+            print("GATHER RETURNED, THIS SHOULD NOT HAPPEN")
+        self.forever_coroutines_task = asyncio.ensure_future(getFromQueueAndStart())
         return self.forever_coroutines_task
 
     def kill_forever_coroutines(self):

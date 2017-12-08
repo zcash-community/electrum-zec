@@ -67,7 +67,7 @@ class Interface(util.PrintError):
     - Member variable server.
     """
 
-    def __init__(self, server, loop, config_path, proxy_config):
+    def __init__(self, server, config_path, proxy_config):
         self.addr = self.auth = None
         if proxy_config is not None:
             if proxy_config["mode"] == "socks5":
@@ -80,23 +80,22 @@ class Interface(util.PrintError):
                 raise Exception("proxy mode not supported")
 
         self.server = server
-        self.loop = loop
         self.config_path = config_path
         host, port, protocol = self.server.split(':')
         self.host = host
         self.port = int(port)
         self.use_ssl = (protocol=='s')
         self.reader = self.writer = None
-        self.lock = asyncio.Lock(loop=loop)
+        self.lock = asyncio.Lock()
         # Dump network messages.  Set at runtime from the console.
         self.debug = False
-        self.unsent_requests = asyncio.PriorityQueue(loop=loop)
+        self.unsent_requests = asyncio.PriorityQueue()
         self.unanswered_requests = {}
         self.last_ping = 0
         self.closed_remotely = False
 
     def conn_coro(self, context):
-        return asyncio.open_connection(self.host, self.port, loop=self.loop, ssl=context)
+        return asyncio.open_connection(self.host, self.port, ssl=context)
 
     async def _get_read_write(self):
         async with self.lock:
@@ -107,13 +106,12 @@ class Interface(util.PrintError):
                 if not os.path.exists(cert_path):
                     context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
                     if self.addr is not None:
-                        proto_factory = lambda: SSLProtocol(self.loop, asyncio.Protocol(), context, None)
+                        proto_factory = lambda: SSLProtocol(asyncio.get_event_loop(), asyncio.Protocol(), context, None)
                         socks_create_coro = aiosocks.create_connection(proto_factory, \
                                             proxy=self.addr, \
                                             proxy_auth=self.auth, \
-                                            dst=(self.host, self.port),
-                                            loop=self.loop)
-                        transport, protocol = await asyncio.wait_for(socks_create_coro, 5, loop=self.loop)
+                                            dst=(self.host, self.port))
+                        transport, protocol = await asyncio.wait_for(socks_create_coro, 5)
                         while True:
                             try:
                                 if protocol._sslpipe is not None:
@@ -124,7 +122,7 @@ class Interface(util.PrintError):
                                 await asyncio.sleep(1)
                         transport.close()
                     else:
-                        reader, writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
+                        reader, writer = await asyncio.wait_for(self.conn_coro(context), 5)
                         dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                         writer.close()
                     cert = ssl.DER_cert_to_PEM_cert(dercert)
@@ -138,15 +136,14 @@ class Interface(util.PrintError):
             try:
                 if self.addr is not None:
                     if not self.use_ssl:
-                        open_coro = aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port), loop=self.loop)
-                        self.reader, self.writer = await asyncio.wait_for(open_coro, 5, loop=self.loop)
+                        open_coro = aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port))
+                        self.reader, self.writer = await asyncio.wait_for(open_coro, 5)
                     else:
-                        asyncio.set_event_loop(self.loop)
                         ssl_in_socks_coro = sslInSocksReaderWriter(self.addr, self.auth, self.host, self.port, ca_certs)
-                        self.reader, self.writer = await asyncio.wait_for(ssl_in_socks_coro, 10, loop=self.loop)
+                        self.reader, self.writer = await asyncio.wait_for(ssl_in_socks_coro, 10)
                 else:
                     context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else None
-                    self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5, loop=self.loop)
+                    self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5)
             except BaseException as e:
                 traceback.print_exc()
                 print("Previous exception will now be reraised")
@@ -176,7 +173,6 @@ class Interface(util.PrintError):
             try:
                 obj += await reader.readuntil(b"\n")
             except asyncio.LimitOverrunError as e:
-                print("LimitOverrunError with", e.consumed, "consumed")
                 obj += await reader.read(e.consumed)
             except asyncio.streams.IncompleteReadError as e:
                 return None
