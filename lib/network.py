@@ -548,7 +548,12 @@ class Network(util.DaemonThread):
             await self.on_get_header(interface, response)
 
         for callback in callbacks:
-            callback(response)
+            if asyncio.iscoroutinefunction(callback):
+                if response is None:
+                    print("RESPONSE IS NONE")
+                await callback(response)
+            else:
+                callback(response)
 
     def get_index(self, method, params):
         """ hashable index for subscriptions and cache"""
@@ -627,11 +632,21 @@ class Network(util.DaemonThread):
         h = self.addr_to_scripthash(address)
         self.send([('blockchain.scripthash.get_history', [h])], self.overload_cb(callback))
 
+    async def send_async(self, messages, callback=None):
+        """ if callback is None, it returns the result """
+        if callback is None:
+            queue = asyncio.Queue()
+            callback = queue.put
+        await self.pending_sends.put((messages, callback))
+        if callback is None:
+            assert queue.qsize() == 1
+            return await queue.get()
+
     def send(self, messages, callback):
         '''Messages is a list of (method, params) tuples'''
         messages = list(messages)
         async def job(future):
-            await self.pending_sends.put((messages, callback))
+            await self.send_async(messages, callback)
             if future: future.set_result("put pending send: " + repr(messages))
         asyncio.run_coroutine_threadsafe(job(None), self.loop)
 
@@ -658,7 +673,10 @@ class Network(util.DaemonThread):
                 r = self.sub_cache.get(k)
             if r is not None:
                 util.print_error("cache hit", k)
-                callback(r)
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(r)
+                else:
+                    callback(r)
             else:
                 message_id = await self.queue_request(method, params)
                 self.unanswered_requests[message_id] = method, params, callback
@@ -1010,6 +1028,7 @@ class Network(util.DaemonThread):
 
 
     def run(self):
+        self.network_thread_id = threading.get_ident()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop) # this does not set the loop on the qt thread
         self.loop = loop # so we store it in the instance too
@@ -1125,7 +1144,21 @@ class Network(util.DaemonThread):
     def get_local_height(self):
         return self.blockchain().height()
 
+    async def asynchronous_get(self, request):
+        res = await self.send_async(request)
+        try:
+            return res.get("result")
+        except:
+            if res is None:
+                print("RES IS NONE")
+                return None
+            print("res is not none")
+            raise BaseException("Could not get result: " + repr(res))
+
     def synchronous_get(self, request, timeout=30):
+        if threading.get_ident() == self.network_thread_id:
+            print("CALLED ON WRONG THREAD")
+            assert False, "CALLED ON WRONG THREAD"
         q = queue.Queue()
         self.send([request], q.put)
         try:
@@ -1135,6 +1168,14 @@ class Network(util.DaemonThread):
         if r.get('error'):
             raise BaseException(r.get('error'))
         return r.get('result')
+
+    async def broadcast_async(self, tx):
+        tx_hash = tx.txid()
+        try:
+            return True, await self.asynchronous_get(('blockchain.transaction.broadcast', [str(tx)]))
+        except BaseException as e:
+            traceback.print_exc()
+            return False, str(e)
 
     def broadcast(self, tx, timeout=30):
         tx_hash = tx.txid()

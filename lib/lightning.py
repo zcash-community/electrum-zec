@@ -47,9 +47,6 @@ def ConfirmedBalance(json):
     confs = request.confirmations
     witness = request.witness  # bool
 
-    WALLET.synchronize()
-    WALLET.wait_until_synchronized()
-
     m.amount = sum(WALLET.get_balance())
     msg = json_format.MessageToJson(m)
     return msg
@@ -89,9 +86,6 @@ def ListUnspentWitness(json):
     req = cl()
     json_format.Parse(json, req)
     confs = req.minConfirmations #TODO regard this
-
-    WALLET.synchronize()
-    WALLET.wait_until_synchronized()
 
     unspent = WALLET.get_utxos()
     m = rpc_pb2.ListUnspentWitnessResponse()
@@ -164,13 +158,6 @@ def ListTransactionDetails(json):
     global HEIGHT
     global WALLET
     global NETWORK
-    WALLET.synchronize()
-    WALLET.wait_until_synchronized()
-    if HEIGHT is None:
-        HEIGHT = WALLET.get_local_height()
-    else:
-        assert HEIGHT != WALLET.get_local_height(), ("old height " + str(HEIGHT), "new height " + str(WALLET.get_local_height()))
-        HEIGHT = WALLET.get_local_height()
     m = rpc_pb2.ListTransactionDetailsResponse()
     for tx_hash, height, conf, timestamp, delta, balance in WALLET.get_history():
         if height == 0:
@@ -266,11 +253,23 @@ def SignMessage(json):
         address = adr
         break
 
-    assert address is not None, "did not find address in list of addresses given out by NewRawKey"
-
-    pri, _ = WALLET.export_private_key(address, None)
-    typ, pri, compressed = bitcoin.deserialize_privkey(pri)
-    pri = EC_KEY(pri)
+    pri = None
+    if address is None:
+        priv_keys = WALLET.storage.get("lightning_extra_keys", [])
+        print("searching lightning_extra_keys", req.pubKey)
+        for i in priv_keys:
+            assert type(i) is int
+            signkey = MySigningKey.from_secret_exponent(i, curve=ecdsa.curves.SECP256k1)
+            pubkeystr = signkey.get_verifying_key().to_string()
+            print("pubkeystr", pubkeystr)
+            if pubkeystr == req.pubKey:
+                pri = signkey
+        if pri is None:
+            assert False, "could not find private key corresponding to " + repr(req.pubKey)
+    else:
+        pri, _ = WALLET.export_private_key(address, None)
+        typ, pri, compressed = bitcoin.deserialize_privkey(pri)
+        pri = EC_KEY(pri)
 
     m.signature = pri.sign(bitcoin.Hash(req.messageToBeSigned), ecdsa.util.sigencode_der)
     m.error = ""
@@ -375,11 +374,20 @@ def deriveRevocationPrivKey(revokeBasePriv, commitSecret):
 
 def maybeTweakPrivKey(signdesc, pri):
     if len(signdesc.singleTweak) > 0:
-        return tweakPrivKey(pri, signdesc.singleTweak)
+        pri2 = tweakPrivKey(pri, signdesc.singleTweak)
     elif len(signdesc.doubleTweak) > 0:
-        return deriveRevocationPrivKey(pri, EC_KEY(signdesc.doubleTweak))
+        pri2 = deriveRevocationPrivKey(pri, EC_KEY(signdesc.doubleTweak))
     else:
-        return pri
+        pri2 = pri
+
+    if pri2 != pri:
+        have_keys = WALLET.storage.get("lightning_extra_keys", [])
+        if pri2.secret not in have_keys:
+            WALLET.storage.put("lightning_extra_keys", have_keys + [pri2.secret])
+            WALLET.storage.write()
+            print("saved new tweaked key", pri2.secret)
+
+    return pri2
 
 
 def isWitnessPubKeyHash(script):
@@ -530,12 +538,12 @@ def signOutputRaw(tx, signDesc):
                                   signDesc.output.value, signDesc.witnessScript, sigHashAll, pri2)
     return sig[:len(sig) - 1]
 
-def PublishTransaction(json):
+async def PublishTransaction(json):
     req = rpc_pb2.PublishTransactionRequest()
     json_format.Parse(json, req)
     global NETWORK
     tx = transaction.Transaction(binascii.hexlify(req.tx).decode("utf-8"))
-    suc, has = NETWORK.broadcast(tx)
+    suc, has = await NETWORK.broadcast_async(tx)
     m = rpc_pb2.PublishTransactionResponse()
     m.success = suc
     m.error = str(has) if not suc else ""
@@ -618,6 +626,7 @@ def computeInputScript(tx, signdesc):
     # this tweak to derive the final private key to be used for signing
     # this output.
     pri2 = maybeTweakPrivKey(signdesc, pri)
+
     #
     # Generate a valid witness stack for the input.
     # TODO(roasbeef): adhere to passed HashType
@@ -645,7 +654,7 @@ class LightningRPC(ForeverCoroutineJob):
         else:
             def call(qitem):
                 client = Server("http://" + machine + ":8090")
-                result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *qitem.args)
+                result = getattr(client, qitem.methodName)(base64.b64encode(privateKeyHash[:6]).decode("ascii"), *[str(x) for x in qitem.args])
                 toprint = result
                 try:
                     if result["stderr"] == "" and result["returncode"] == 0:
@@ -668,7 +677,7 @@ class LightningUI():
     def __getattr__(self, nam):
         synced, local, server = isSynced()
         if not synced:
-            return "Not synced yet: local/server: {}/{}".format(local, server)
+            return lambda *args: "Not synced yet: local/server: {}/{}".format(local, server)
         return lightningCall(self.rpc(), nam)
 
 privateKeyHash = None
@@ -709,44 +718,75 @@ class LightningWorker(ForeverCoroutineJob):
                     print(NETWORK.get_status_value("updated"))
                 wasAlreadyUpToDate = True
 
-            reader, writer = await asyncio.open_connection(machine, 1080)
-            writer.write(b"MAGIC")
-            writer.write(privateKeyHash[:6])
-            await writer.drain()
-            data = b""
-            while True:
-              try:
-                json.loads(data)
-              except:
-                data += await reader.read(1)
-              else:
-                break
-            obj = json.loads(data)
-
-            methods = [FetchRootKey
-            ,ConfirmedBalance
-            ,NewAddress
-            ,ListUnspentWitness
-            ,SetHdSeed
-            ,NewRawKey
-            ,FetchInputInfo
-            ,ComputeInputScript
-            ,SignOutputRaw
-            ,PublishTransaction
-            ,LockOutpoint
-            ,UnlockOutpoint
-            ,ListTransactionDetails
-            ,SendOutputs
-            ,IsSynced
-            ,SignMessage]
-            result = None
-            for method in methods:
-                if method.__name__ == obj["method"]:
-                    result = method(obj["params"][0])
+            writer = None
+            try:
+                reader, writer = await asyncio.wait_for(asyncio.open_connection(machine, 1080), 5)
+                writer.write(b"MAGIC")
+                writer.write(privateKeyHash[:6])
+                await writer.drain()
+                data = b""
+                while True:
+                  try:
+                    json.loads(data)
+                  except ValueError:
+                    data += await reader.read(1)
+                  else:
                     break
-            if result is None:
-                writer.write(json.dumps({"id":obj["id"],"error": "invalid method"}).encode("ascii"))
+                obj = json.loads(data)
+            except:
+                traceback.print_exc()
+                continue
             else:
-                writer.write(json.dumps({"id":obj["id"],"result":result}).encode("ascii"))
-            await writer.drain()
-            writer.close()
+
+                methods = [FetchRootKey
+                ,ConfirmedBalance
+                ,NewAddress
+                ,ListUnspentWitness
+                ,SetHdSeed
+                ,NewRawKey
+                ,FetchInputInfo
+                ,ComputeInputScript
+                ,SignOutputRaw
+                ,PublishTransaction
+                ,LockOutpoint
+                ,UnlockOutpoint
+                ,ListTransactionDetails
+                ,SendOutputs
+                ,IsSynced
+                ,SignMessage]
+                result = None
+                found = False
+                try:
+                    for method in methods:
+                        if method.__name__ == obj["method"]:
+                            params = obj["params"][0]
+                            print("calling method", obj["method"], "with", params)
+                            if asyncio.iscoroutinefunction(method):
+                                result = await method(params)
+                            else:
+                                result = method(params)
+                            found = True
+                            break
+                except BaseException as e:
+                    traceback.print_exc()
+                    print("exception while calling method", obj["method"])
+                    writer.write(json.dumps({"id":obj["id"],"error": {"code": -32002, "message": str(e)}}).encode("ascii"))
+                    await writer.drain()
+                else:
+                    if not found:
+                        writer.write(json.dumps({"id":obj["id"],"error": {"code": -32601, "message": "invalid method"}}).encode("ascii"))
+                    else:
+                        print("result was", result)
+                        if result is None:
+                            result = "{}"
+                        try:
+                            assert type({}) is type(json.loads(result))
+                        except:
+                            traceback.print_exc()
+                            print("wrong method implementation")
+                            writer.write(json.dumps({"id":obj["id"],"error": {"code": -32000, "message": "wrong return type in electrum-lightning-hub"}}).encode("ascii"))
+                        else:
+                            writer.write(json.dumps({"id":obj["id"],"result": result}).encode("ascii"))
+                    await writer.drain()
+            finally:
+                if writer: writer.close()
