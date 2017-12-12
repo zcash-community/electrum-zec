@@ -38,8 +38,7 @@ def makeProtocolFactory(receivedQueue, connUpLock, ca_certs):
 class ReaderEmulator:
     def __init__(self, receivedQueue):
         self.receivedQueue = receivedQueue
-    async def readuntil(self, splitter):
-        assert splitter == b"\n"
+    async def read(self, _bufferSize):
         return await self.receivedQueue.get()
 
 class WriterEmulator:
@@ -66,7 +65,7 @@ if __name__ == "__main__":
             reader, writer = await sslInSocksReaderWriter(aiosocks.Socks4Addr("127.0.0.1", 9050), None, "songbird.bauerj.eu", 50002, None)
             writer.write(b'{"id":0,"method":"server.version","args":["3.0.2", "1.1"]}\n')
             await writer.drain()
-            print(await reader.readuntil(b"\n"))
+            print(await reader.read(4096))
             writer.close()
             fut.set_result("finished")
         except BaseException as e:
