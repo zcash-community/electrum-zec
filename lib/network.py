@@ -216,7 +216,6 @@ class Network(util.DaemonThread):
         self.interfaces = {}
         self.auto_connect = self.config.get('auto_connect', True)
         self.connecting = set()
-        self.network_job = None
         self.proxy = None
 
     def register_callback(self, callback, events):
@@ -491,8 +490,10 @@ class Network(util.DaemonThread):
                 self.interfaces.pop(interface.server)
             if interface.server == self.default_server:
                 self.interface = None
-            if interface.jobs is not None:
+            if interface.jobs:
                 interface.jobs.cancel()
+            if interface.boot_job is not None:
+                interface.boot_job.cancel()
             if self.process_pending_sends_job is not None:
                 self.process_pending_sends_job.cancel()
             interface.close()
@@ -695,14 +696,15 @@ class Network(util.DaemonThread):
         interface.tip = 0
         interface.mode = 'default'
         interface.request = None
-        await self.queued_interfaces.put(interface)
+        interface.jobs = None
+        interface.boot_job = None
+        self.boot_interface(interface)
         #self.interfaces[server] = interface
         return interface
 
     async def request_chunk(self, interface, idx):
         interface.print_error("requesting chunk %d" % idx)
         await self.queue_request('blockchain.block.get_chunk', [idx], interface)
-        assert interface.jobs
         interface.request = idx
         interface.req_time = time.time()
 
@@ -922,38 +924,34 @@ class Network(util.DaemonThread):
         with b.lock:
             b.update_size()
 
-    async def make_network_job(self, future):
-        try:
-            await self.start_network(deserialize_server(self.default_server)[2],
-                                     deserialize_proxy(self.config.get('proxy')))
-            self.process_pending_sends_job = self.make_process_pending_sends_job()
-            while self.is_running():
-                interface = await self.queued_interfaces.get()
+    def boot_interface(self, interface):
+        async def job():
+            try:
                 await self.queue_request('server.version', [ELECTRUM_VERSION, PROTOCOL_VERSION], interface)
                 if not await interface.send_request():
-                    print("interface did not work")
                     self.connection_down(interface.server)
-                    continue
-                gathered = asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface))
-                interface.jobs = asyncio.ensure_future(gathered)
-                def cb(fut):
-                    fut.exception()
-                    try:
-                        for i in fut.result(): assert i is None
-                    except CancelledError:
-                        pass
-                    if not future.done(): future.set_result("Network job done")
-                interface.jobs.add_done_callback(cb)
+                    self.connecting.remove(interface.server)
+                    return
+                self.connecting.remove(interface.server)
                 self.interfaces[interface.server] = interface
                 await self.queue_request('blockchain.headers.subscribe', [], interface)
                 if interface.server == self.default_server:
                     await self.switch_to_interface(interface.server)
+                interface.jobs = asyncio.ensure_future(asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface)))
+                def cb(fut):
+                    try:
+                        fut.exception()
+                    except:
+                        pass
+                interface.jobs.add_done_callback(cb)
                 #self.notify('interfaces')
-
-        except BaseException as e:
-            traceback.print_exc()
-            print("FATAL ERROR in network_job")
-            if not future.done(): future.set_exception(e)
+            except GeneratorExit:
+                pass
+            except BaseException as e:
+                traceback.print_exc()
+                print("FATAL ERROR in start_interface")
+                raise e
+        interface.boot_job = asyncio.ensure_future(job())
 
     def make_ping_job(self, interface):
         async def job():
@@ -963,17 +961,16 @@ class Network(util.DaemonThread):
                     # Send pings and shut down stale interfaces
                     # must use copy of values
                     if interface.has_timed_out():
-                        print("timed out")
+                        print(interface.server, "timed out")
                         self.connection_down(interface.server)
                     elif interface.ping_required():
-                        print("ping required")
                         params = [ELECTRUM_VERSION, PROTOCOL_VERSION]
                         await self.queue_request('server.version', params, interface)
             except CancelledError:
                 pass
             except:
                 traceback.print_exc()
-                print("FATAL ERRROR in ping_job")
+                print("FATAL ERROR in ping_job")
         return asyncio.ensure_future(job())
 
     async def maintain_interfaces(self):
@@ -1009,18 +1006,23 @@ class Network(util.DaemonThread):
         self.loop = loop # so we store it in the instance too
         self.init_headers_file()
         self.pending_sends = asyncio.Queue()
-        self.queued_interfaces = asyncio.Queue()
-        if not self.network_job:
-            network_job_future = asyncio.Future()
-            self.network_job = asyncio.ensure_future(self.make_network_job(network_job_future))
 
+        self.process_pending_sends_job = self.make_process_pending_sends_job()
+        async def job():
+            try:
+                await self.start_network(deserialize_server(self.default_server)[2],
+                                         deserialize_proxy(self.config.get('proxy')))
+            except:
+                traceback.print_exc()
+                print("Previous exception in start_network")
+                raise
+        asyncio.ensure_future(job())
         run_future = asyncio.Future()
         asyncio.ensure_future(self.run_async(run_future))
 
-        combined_task = asyncio.gather(network_job_future, run_future)
-        loop.run_until_complete(combined_task)
-        combined_task.exception()
-        self.print_error("combined task result", combined_task.result())
+        loop.run_until_complete(run_future)
+        run_future.exception()
+        self.print_error("run future result", run_future.result())
         loop.close()
 
     async def run_async(self, future):

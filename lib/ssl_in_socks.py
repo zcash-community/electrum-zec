@@ -1,3 +1,4 @@
+import traceback
 import ssl
 from asyncio.sslproto import SSLProtocol
 import aiosocks
@@ -22,15 +23,18 @@ class AppProto(asyncio.Protocol):
 def makeProtocolFactory(receivedQueue, connUpLock, ca_certs):
     class MySSLProtocol(SSLProtocol):
         def connection_lost(self, data):
-            print("conn lost")
             super().connection_lost(data)
         def _on_handshake_complete(self, handshake_exc):
             super()._on_handshake_complete(handshake_exc)
             if handshake_exc is not None:
                 print("handshake complete", handshake_exc)
-                print("cert length", len(self._sslpipe.ssl_object.getpeercert(True)))
+                try:
+                    print("cert length", len(self._sslpipe.ssl_object.getpeercert(True)))
+                except ValueError as e:
+                    assert str(e) == "handshake not done yet", e
+                    print("exception was from on_handshake_complete") # TODO how can this happen? Handshake should be done if callback is called
         def __init__(self):
-            context = interface.get_ssl_context(cert_reqs=ssl.CERT_REQUIRED if ca_certs is not None else ssl.CERT_NONE, ca_certs=ca_certs)
+            context = interface.get_ssl_context(cert_reqs=ssl.CERT_REQUIRED if ca_certs is None else ssl.CERT_NONE, ca_certs=ca_certs)
             proto = AppProto(receivedQueue, connUpLock)
             super().__init__(asyncio.get_event_loop(), proto, context, None)
     return MySSLProtocol
