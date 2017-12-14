@@ -161,6 +161,7 @@ class Network(util.DaemonThread):
     """
 
     def __init__(self, config=None):
+        asyncio.set_event_loop(None)
         if config is None:
             config = {}  # Do not use mutables as default values!
         util.DaemonThread.__init__(self)
