@@ -24,6 +24,7 @@
 # SOFTWARE.
 import aiosocks
 import os
+import stat
 import re
 import ssl
 import sys
@@ -41,11 +42,10 @@ import requests
 from aiosocks.errors import SocksError
 from concurrent.futures import TimeoutError
 
-from .util import print_error
-from .ssl_in_socks import sslInSocksReaderWriter
-
 ca_path = requests.certs.where()
 
+from .util import print_error
+from .ssl_in_socks import sslInSocksReaderWriter
 from . import util
 from . import x509
 from . import pem
@@ -135,6 +135,11 @@ class Interface(util.PrintError):
                 else:
                     is_new = False
                 ca_certs = temporary_path if is_new else cert_path
+
+                size = os.stat(ca_certs)[stat.ST_SIZE]
+                self_signed = size != 0
+                if not self_signed:
+                    ca_certs = ca_path
             try:
                 if self.addr is not None:
                     if not self.use_ssl:
