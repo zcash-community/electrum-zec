@@ -228,20 +228,18 @@ class Interface(util.PrintError):
             self.buf = self.buf[pos+1:]
             self.last_action = time.time()
             return obj
-    async def get(self):
+    async def get(self, is_running):
         reader, _ = await self._get_read_write()
 
-        while True:
+        while is_running():
             tried = self._try_extract()
             if tried: return tried
             temp = io.BytesIO()
-            starttime = time.time()
-            while time.time() - starttime < 1:
-                try:
-                    data = await asyncio.wait_for(reader.read(2**8), 1)
-                    temp.write(data)
-                except asyncio.TimeoutError:
-                    break
+            try:
+                data = await asyncio.wait_for(reader.read(2**10), 1)
+                temp.write(data)
+            except asyncio.TimeoutError:
+                continue
             self.buf += temp.getvalue()
 
     def idle_time(self):
@@ -266,7 +264,10 @@ class Interface(util.PrintError):
         '''Sends queued requests.  Returns False on failure.'''
         make_dict = lambda m, p, i: {'method': m, 'params': p, 'id': i}
         n = self.num_requests()
-        prio, request = await self.unsent_requests.get()
+        try:
+            prio, request = await asyncio.wait_for(self.unsent_requests.get(), 1.5)
+        except TimeoutError:
+            return False
         try:
             await self.send_all([make_dict(*request)])
         except (SocksError, OSError, TimeoutError) as e:
@@ -298,7 +299,7 @@ class Interface(util.PrintError):
             return True
         return False
 
-    async def get_response(self):
+    async def get_response(self, is_running):
         '''Call if there is data available on the socket.  Returns a list of
         (request, response) pairs.  Notifications are singleton
         unsolicited responses presumably as a result of prior
@@ -307,12 +308,12 @@ class Interface(util.PrintError):
         corresponding request.  If the connection was closed remotely
         or the remote server is misbehaving, a (None, None) will appear.
         '''
-        response = await self.get()
+        response = await self.get(is_running)
         if not type(response) is dict:
-            print("response type not dict!", response)
             if response is None:
                 self.closed_remotely = True
-                self.print_error("connection closed remotely")
+                if is_running():
+                    self.print_error("connection closed remotely")
             return None, None
         if self.debug:
             self.print_error("<--", response)
