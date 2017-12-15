@@ -68,7 +68,8 @@ class Interface(util.PrintError):
     - Member variable server.
     """
 
-    def __init__(self, server, config_path, proxy_config):
+    def __init__(self, server, config_path, proxy_config, is_running):
+        self.is_running = is_running
         self.addr = self.auth = None
         if proxy_config is not None:
             if proxy_config["mode"] == "socks5":
@@ -119,7 +120,7 @@ class Interface(util.PrintError):
                             fut.set_result(protocol._sslpipe.ssl_object.getpeercert(True))
                     except BaseException as e:
                         fut.set_exception(e)
-                while True:
+                while self.is_running():
                     fut = asyncio.Future()
                     asyncio.ensure_future(job(fut))
                     try:
@@ -133,18 +134,19 @@ class Interface(util.PrintError):
                         await asyncio.sleep(1)
                         continue
                     except:
-                        traceback.print_exc()
+                        if self.is_running(): traceback.print_exc()
                         continue
                     break
-                print("done sleeping")
+                if not self.is_running(): return
                 transport.close()
             else:
                 reader, writer = await asyncio.wait_for(self.conn_coro(context), 5)
                 dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                 writer.close()
         except ConnectionError:
-            traceback.print_exc()
-            print("Previous exception from _save_certificate")
+            if self.is_running():
+                traceback.print_exc()
+                print("Previous exception from _save_certificate")
             return
         except TimeoutError:
             return
@@ -162,7 +164,7 @@ class Interface(util.PrintError):
     async def _get_read_write(self):
         async with self.lock:
             if self.reader is not None and self.writer is not None:
-                return self.reader, self.writer
+                return self.reader, self.writer, True
             if self.use_ssl:
                 cert_path = os.path.join(self.config_path, 'certs', self.host)
                 if not os.path.exists(cert_path):
@@ -196,19 +198,24 @@ class Interface(util.PrintError):
                 print("TimeoutError after getting certificate successfully...")
                 raise
             except BaseException as e:
-                traceback.print_exc()
-                print("Previous exception will now be reraised")
+                if self.is_running():
+                    traceback.print_exc()
+                    print("Previous exception will now be reraised")
                 raise e
             if self.use_ssl and is_new:
                 self.print_error("saving new certificate for", self.host)
                 os.rename(temporary_path, cert_path)
-            return self.reader, self.writer
+            return self.reader, self.writer, False
 
     async def send_all(self, list_of_requests):
-        _, w = await self._get_read_write()
+        _, w, usedExisting = await self._get_read_write()
+        starttime = time.time()
         for i in list_of_requests:
             w.write(json.dumps(i).encode("ascii") + b"\n")
         await w.drain()
+        if time.time() - starttime > 2.5:
+            print("send_all: sending is taking too long. Used existing connection: ", usedExisting)
+            raise ConnectionError("sending is taking too long")
 
     def close(self):
         if self.writer:
@@ -228,10 +235,10 @@ class Interface(util.PrintError):
             self.buf = self.buf[pos+1:]
             self.last_action = time.time()
             return obj
-    async def get(self, is_running):
-        reader, _ = await self._get_read_write()
+    async def get(self):
+        reader, _, _ = await self._get_read_write()
 
-        while is_running():
+        while self.is_running():
             tried = self._try_extract()
             if tried: return tried
             temp = io.BytesIO()
@@ -299,7 +306,7 @@ class Interface(util.PrintError):
             return True
         return False
 
-    async def get_response(self, is_running):
+    async def get_response(self):
         '''Call if there is data available on the socket.  Returns a list of
         (request, response) pairs.  Notifications are singleton
         unsolicited responses presumably as a result of prior
@@ -308,11 +315,11 @@ class Interface(util.PrintError):
         corresponding request.  If the connection was closed remotely
         or the remote server is misbehaving, a (None, None) will appear.
         '''
-        response = await self.get(is_running)
+        response = await self.get()
         if not type(response) is dict:
             if response is None:
                 self.closed_remotely = True
-                if is_running():
+                if self.is_running():
                     self.print_error("connection closed remotely")
             return None, None
         if self.debug:

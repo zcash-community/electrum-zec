@@ -563,7 +563,7 @@ class Network(util.DaemonThread):
 
     async def process_responses(self, interface):
         while self.is_running():
-            request, response = await interface.get_response(lambda: self.is_running())
+            request, response = await interface.get_response()
             if request:
                 method, params, message_id = request
                 k = self.get_index(method, params)
@@ -646,7 +646,6 @@ class Network(util.DaemonThread):
         # Requests needs connectivity.  If we don't have an interface,
         # we cannot process them.
         if not self.interface:
-            print("no interface, returning")
             await asyncio.sleep(1)
             return
 
@@ -697,7 +696,7 @@ class Network(util.DaemonThread):
     async def new_interface(self, server):
         # todo: get tip first, then decide which checkpoint to use.
         self.add_recent_server(server)
-        interface = Interface(server, self.config.path, self.proxy)
+        interface = Interface(server, self.config.path, self.proxy, lambda: self.is_running())
         interface.future = asyncio.Future()
         interface.blockchain = None
         interface.tip_header = None
@@ -893,8 +892,9 @@ class Network(util.DaemonThread):
             except GeneratorExit:
                 pass
             except:
-                traceback.print_exc()
-                print("FATAL ERROR ^^^")
+                if self.is_running():
+                    traceback.print_exc()
+                    print("FATAL ERROR ^^^")
         return asyncio.ensure_future(job())
 
     def make_process_responses_job(self, interface):
@@ -907,8 +907,9 @@ class Network(util.DaemonThread):
                 await self.connection_down(interface.server)
                 print("OS error, connection downed")
             except BaseException:
-                traceback.print_exc()
-                print("FATAL ERROR in process_responses")
+                if self.is_running():
+                    traceback.print_exc()
+                    print("FATAL ERROR in process_responses")
         return asyncio.ensure_future(job())
 
     def make_process_pending_sends_job(self):
@@ -922,8 +923,9 @@ class Network(util.DaemonThread):
             #except CancelledError:
             #    pass
             except BaseException as e:
-                traceback.print_exc()
-                print("FATAL ERROR in process_pending_sends")
+                if self.is_running():
+                    traceback.print_exc()
+                    print("FATAL ERROR in process_pending_sends")
         return asyncio.ensure_future(job())
 
     def init_headers_file(self):
@@ -968,9 +970,10 @@ class Network(util.DaemonThread):
                 print(interface.server, "GENERATOR EXIT")
                 pass
             except BaseException as e:
-                traceback.print_exc()
-                print("FATAL ERROR in boot_interface")
-                raise e
+                if self.is_running():
+                    traceback.print_exc()
+                    print("FATAL ERROR in boot_interface")
+                    raise e
         interface.boot_job = asyncio.ensure_future(job())
 
     def make_ping_job(self, interface):
@@ -989,8 +992,9 @@ class Network(util.DaemonThread):
             except GeneratorExit:
                 pass
             except:
-                traceback.print_exc()
-                print("FATAL ERROR in ping_job")
+                if self.is_running():
+                    traceback.print_exc()
+                    print("FATAL ERROR in ping_job")
         return asyncio.ensure_future(job())
 
     async def maintain_interfaces(self):
@@ -1057,7 +1061,10 @@ class Network(util.DaemonThread):
             for i in asyncio.Task.all_tasks():
                 if asyncio.Task.current_task() == i: continue
                 try:
-                    await i
+                    await asyncio.wait_for(i, 5)
+                except TimeoutError:
+                    print("TOO SLOW TO SHUT DOWN, CANCELLING", i)
+                    i.cancel()
                 except CancelledError:
                     pass
             future.set_result("run_async done")
