@@ -393,7 +393,6 @@ class Network(util.DaemonThread):
 
     async def start_network(self, protocol, proxy):
         self.stopped = False
-        # TODO proxy
         assert not self.interface and not self.interfaces
         assert not self.connecting
         self.print_error('starting network')
@@ -449,7 +448,6 @@ class Network(util.DaemonThread):
                     await self.stop_network()
                     self.default_server = server
                     await self.start_network(protocol, proxy)
-                    self.notify('interfaces')
                 except BaseException as e:
                     traceback.print_exc()
                     print("exception from restart job")
@@ -663,7 +661,10 @@ class Network(util.DaemonThread):
             await asyncio.sleep(1)
             return
 
-        messages, callback = await self.pending_sends.get()
+        try:
+            messages, callback = await asyncio.wait_for(self.pending_sends.get(), 1)
+        except TimeoutError:
+            return
 
         for method, params in messages:
             r = None
@@ -930,7 +931,6 @@ class Network(util.DaemonThread):
         async def job():
             try:
                 while not self.stopped:
-                    print("pend send")
                     try:
                         await asyncio.wait_for(asyncio.shield(self.process_pending_sends()), 1)
                     except TimeoutError:
@@ -1066,11 +1066,11 @@ class Network(util.DaemonThread):
         self.init_headers_file()
         self.pending_sends = asyncio.Queue()
 
-        self.process_pending_sends_job = self.make_process_pending_sends_job()
         async def job():
             try:
                 await self.start_network(deserialize_server(self.default_server)[2],
                                          deserialize_proxy(self.config.get('proxy')))
+                self.process_pending_sends_job = self.make_process_pending_sends_job()
             except:
                 traceback.print_exc()
                 print("Previous exception in start_network")
