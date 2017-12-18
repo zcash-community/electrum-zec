@@ -143,10 +143,9 @@ class Interface(util.PrintError):
                 reader, writer = await asyncio.wait_for(self.conn_coro(context), 5)
                 dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                 writer.close()
-        except ConnectionError:
+        except OSError as e: # not ConnectionError because we need socket.gaierror too
             if self.is_running():
-                traceback.print_exc()
-                print("Previous exception from _save_certificate")
+                print("Exception in _save_certificate", type(e))
             return
         except TimeoutError:
             return
@@ -199,8 +198,9 @@ class Interface(util.PrintError):
                 raise
             except BaseException as e:
                 if self.is_running():
-                    traceback.print_exc()
-                    print("Previous exception will now be reraised")
+                    if not isinstance(e, OSError):
+                        traceback.print_exc()
+                        print("Previous exception will now be reraised")
                 raise e
             if self.use_ssl and is_new:
                 self.print_error("saving new certificate for", self.host)
