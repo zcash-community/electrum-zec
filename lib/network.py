@@ -174,16 +174,17 @@ class Network(util.DaemonThread):
         self.blockchain_index = config.get('blockchain_index', 0)
         if self.blockchain_index not in self.blockchains.keys():
             self.blockchain_index = 0
+        self.protocol = 't' if self.config.get('nossl') else 's'
         # Server for addresses and transactions
         self.default_server = self.config.get('server')
         # Sanitize default server
         try:
-            deserialize_server(self.default_server)
+            host, port, protocol = deserialize_server(self.default_server)
+            assert protocol == self.protocol
         except:
             self.default_server = None
         if not self.default_server:
             self.default_server = pick_random_server()
-
         self.lock = threading.Lock()
         self.message_id = 0
         self.debug = False
@@ -219,7 +220,6 @@ class Network(util.DaemonThread):
         self.interfaces = {}
         self.auto_connect = self.config.get('auto_connect', True)
         self.connecting = set()
-        self.proxy = None
 
     def register_callback(self, callback, events):
         with self.lock:
