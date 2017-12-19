@@ -189,7 +189,7 @@ class Interface(util.PrintError):
                         self.reader, self.writer = await asyncio.wait_for(open_coro, 5)
                     else:
                         ssl_in_socks_coro = sslInSocksReaderWriter(self.addr, self.auth, self.host, self.port, ca_certs)
-                        self.reader, self.writer = await asyncio.wait_for(ssl_in_socks_coro, 10)
+                        self.reader, self.writer = await asyncio.wait_for(ssl_in_socks_coro, 5)
                 else:
                     context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else None
                     self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5)
