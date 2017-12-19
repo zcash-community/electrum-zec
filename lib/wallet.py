@@ -854,7 +854,7 @@ class Abstract_Wallet(PrintError):
         time_str = format_time(timestamp) if timestamp else _("unknown")
         status_str = TX_STATUS[status] if status < 5 else time_str
         if exp_n:
-            status_str += ' [< %.2f MB]'%(exp_n/1000000)
+            status_str += ' [%d sat/b, %.2f MB]'%(fee_per_kb//1000, exp_n/1000000)
         return status, status_str
 
     def relayfee(self):
