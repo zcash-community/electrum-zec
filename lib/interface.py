@@ -140,12 +140,12 @@ class Interface(util.PrintError):
                 if not self.is_running(): return
                 transport.close()
             else:
-                reader, writer = await asyncio.wait_for(self.conn_coro(context), 5)
+                reader, writer = await asyncio.wait_for(self.conn_coro(context), 3)
                 dercert = writer.get_extra_info('ssl_object').getpeercert(True)
                 writer.close()
         except OSError as e: # not ConnectionError because we need socket.gaierror too
             if self.is_running():
-                print("Exception in _save_certificate", type(e))
+                print(self.server, "Exception in _save_certificate", type(e))
             return
         except TimeoutError:
             return
