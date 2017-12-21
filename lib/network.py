@@ -583,14 +583,8 @@ class Network(util.DaemonThread):
         elif method == 'blockchain.block.get_header':
             await self.on_get_header(interface, response)
 
-        print("callbacks", callbacks)
         for callback in callbacks:
-            if asyncio.iscoroutinefunction(callback):
-                if response is None:
-                    print("RESPONSE IS NONE")
-                await callback(response)
-            else:
-                callback(response)
+            callback(response)
 
     def get_index(self, method, params):
         """ hashable index for subscriptions and cache"""
@@ -668,18 +662,6 @@ class Network(util.DaemonThread):
     def request_address_history(self, address, callback):
         h = self.addr_to_scripthash(address)
         self.send([('blockchain.scripthash.get_history', [h])], self.overload_cb(callback))
-
-    async def send_async(self, messages, callback=None):
-        """ if callback is None, it returns the result """
-        chosenCallback = callback
-        if callback is None:
-            queue = asyncio.Queue()
-            chosenCallback = queue.put
-        assert type(messages[0]) is tuple and len(messages[0]) == 2, repr(messages) + " does not contain a pair-tuple in first position"
-        await self.pending_sends.put((messages, chosenCallback))
-        if callback is None:
-            #assert queue.qsize() == 1, "queue does not have a single result, it has length " + str(queue.qsize())
-            return await asyncio.wait_for(queue.get(), 5)
 
     def send(self, messages, callback):
         '''Messages is a list of (method, params) tuples'''
@@ -1120,87 +1102,6 @@ class Network(util.DaemonThread):
                 await self.request_fee_estimates()
 
 
-    async def make_network_job(self, future):
-        try:
-            await self.start_network(deserialize_server(self.default_server)[2],
-                                     deserialize_proxy(self.config.get('proxy')))
-            self.process_pending_sends_job = self.make_process_pending_sends_job()
-            while self.is_running():
-                interface = await self.queued_interfaces.get()
-                await self.queue_request('server.version', [ELECTRUM_VERSION, PROTOCOL_VERSION], interface)
-                if not await interface.send_request():
-                    print("interface did not work")
-                    self.connection_down(interface.server)
-                    continue
-                gathered = asyncio.gather(self.make_ping_job(interface), self.make_send_requests_job(interface), self.make_process_responses_job(interface))
-                interface.jobs = asyncio.ensure_future(gathered)
-                def cb(fut):
-                    fut.exception()
-                    try:
-                        for i in fut.result(): assert i is None
-                    except CancelledError:
-                        pass
-                    if not future.done(): future.set_result("Network job done")
-                interface.jobs.add_done_callback(cb)
-                self.interfaces[interface.server] = interface
-                await self.queue_request('blockchain.headers.subscribe', [], interface)
-                if interface.server == self.default_server:
-                    await self.switch_to_interface(interface.server)
-                #self.notify('interfaces')
-
-        except BaseException as e:
-            traceback.print_exc()
-            print("FATAL ERROR in network_job")
-            if not future.done(): future.set_exception(e)
-
-    def make_ping_job(self, interface):
-        async def job():
-            try:
-                while self.is_running():
-                    await asyncio.sleep(1)
-                    # Send pings and shut down stale interfaces
-                    # must use copy of values
-                    if interface.has_timed_out():
-                        print("timed out")
-                        self.connection_down(interface.server)
-                    elif interface.ping_required():
-                        print("ping required")
-                        params = [ELECTRUM_VERSION, PROTOCOL_VERSION]
-                        await self.queue_request('server.version', params, interface)
-            except CancelledError:
-                pass
-            except:
-                traceback.print_exc()
-                print("FATAL ERRROR in ping_job")
-        return asyncio.ensure_future(job())
-
-    async def maintain_interfaces(self):
-        now = time.time()
-        # nodes
-        if len(self.interfaces) + len(self.connecting) < self.num_server:
-            await self.start_random_interface()
-            if now - self.nodes_retry_time > NODES_RETRY_INTERVAL:
-                self.print_error('network: retrying connections')
-                self.disconnected_servers = set([])
-                self.nodes_retry_time = now
-
-        # main interface
-        if not self.is_connected():
-            if self.auto_connect:
-                if not self.is_connecting():
-                    await self.switch_to_random_interface()
-            else:
-                if self.default_server in self.disconnected_servers:
-                    if now - self.server_retry_time > SERVER_RETRY_INTERVAL:
-                        self.disconnected_servers.remove(self.default_server)
-                        self.server_retry_time = now
-                else:
-                    await self.switch_to_interface(self.default_server)
-        else:
-            if self.config.is_fee_estimates_update_required():
-                await self.request_fee_estimates()
-
-
     def run(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop) # this does not set the loop on the qt thread
@@ -1329,20 +1230,7 @@ class Network(util.DaemonThread):
     def get_local_height(self):
         return self.blockchain().height()
 
-    async def asynchronous_get(self, request):
-        assert type(request) is tuple
-        assert type(request[1]) is list
-        res = await self.send_async([request])
-        try:
-            return res.get("result")
-        except:
-            print("asynchronous_get could not get result from", res)
-            raise BaseException("Could not get result: " + repr(res))
-
     def synchronous_get(self, request, timeout=30):
-        if threading.get_ident() == self.network_thread_id:
-            print("CALLED ON WRONG THREAD")
-            assert False, "CALLED ON WRONG THREAD"
         q = queue.Queue()
         self.send([request], q.put)
         try:
@@ -1352,15 +1240,6 @@ class Network(util.DaemonThread):
         if r.get('error'):
             raise BaseException(r.get('error'))
         return r.get('result')
-
-    async def broadcast_async(self, tx):
-        tx_hash = tx.txid()
-        try:
-            return True, await self.asynchronous_get(('blockchain.transaction.broadcast', [str(tx)]))
-        except BaseException as e:
-            traceback.print_exc()
-            print("previous trace was captured and printed in broadcast_async")
-            return False, str(e)
 
     def broadcast(self, tx, timeout=30):
         tx_hash = tx.txid()

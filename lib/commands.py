@@ -672,11 +672,6 @@ class Commands:
         """ return wallet synchronization status """
         return self.wallet.is_up_to_date()
 
-    @command('w')
-    def asyncio_test(self):
-        from .asyncio import asyncio_test
-        return asyncio_test(self.wallet)
-
     @command('')
     def help(self):
         # for the python console

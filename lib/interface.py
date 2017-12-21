@@ -252,64 +252,8 @@ class Interface(util.PrintError):
     def idle_time(self):
         return time.time() - self.last_action
 
-    def conn_coro(self, context):
-        return asyncio.open_connection(self.host, self.port, ssl=context)
-
-    async def _get_read_write(self):
-        async with self.lock:
-            if self.reader is not None and self.writer is not None:
-                return self.reader, self.writer
-            if self.use_ssl:
-                cert_path = os.path.join(self.config_path, 'certs', self.host)
-                if not os.path.exists(cert_path):
-                    context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
-                    if self.addr is not None:
-                        proto_factory = lambda: SSLProtocol(asyncio.get_event_loop(), asyncio.Protocol(), context, None)
-                        socks_create_coro = aiosocks.create_connection(proto_factory, \
-                                            proxy=self.addr, \
-                                            proxy_auth=self.auth, \
-                                            dst=(self.host, self.port))
-                        transport, protocol = await asyncio.wait_for(socks_create_coro, 5)
-                        while True:
-                            try:
-                                if protocol._sslpipe is not None:
-                                    dercert = protocol._sslpipe.ssl_object.getpeercert(True)
-                                    break
-                            except ValueError:
-                                print("sleeping for cert")
-                                await asyncio.sleep(1)
-                        transport.close()
-                    else:
-                        reader, writer = await asyncio.wait_for(self.conn_coro(context), 5)
-                        dercert = writer.get_extra_info('ssl_object').getpeercert(True)
-                        writer.close()
-                    cert = ssl.DER_cert_to_PEM_cert(dercert)
-                    temporary_path = cert_path + '.temp'
-                    with open(temporary_path, "w") as f:
-                        f.write(cert)
-                    is_new = True
-                else:
-                    is_new = False
-                ca_certs = temporary_path if is_new else cert_path
-            try:
-                if self.addr is not None:
-                    if not self.use_ssl:
-                        open_coro = aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port))
-                        self.reader, self.writer = await asyncio.wait_for(open_coro, 5)
-                    else:
-                        ssl_in_socks_coro = sslInSocksReaderWriter(self.addr, self.auth, self.host, self.port, ca_certs)
-                        self.reader, self.writer = await asyncio.wait_for(ssl_in_socks_coro, 10)
-                else:
-                    context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else None
-                    self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5)
-            except BaseException as e:
-                traceback.print_exc()
-                print("Previous exception will now be reraised")
-                raise e
-            if self.use_ssl and is_new:
-                self.print_error("saving new certificate for", self.host)
-                os.rename(temporary_path, cert_path)
-            return self.reader, self.writer
+    def diagnostic_name(self):
+        return self.host
 
     async def queue_request(self, *args):  # method, params, _id
         '''Queue a request, later to be send with send_requests when the
