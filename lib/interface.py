@@ -24,6 +24,7 @@
 # SOFTWARE.
 import aiosocks
 import os
+import stat
 import re
 import ssl
 import sys
@@ -34,17 +35,17 @@ import asyncio
 import json
 import asyncio.streams
 from asyncio.sslproto import SSLProtocol
+import io
 
 import requests
 
 from aiosocks.errors import SocksError
 from concurrent.futures import TimeoutError
 
-from .util import print_error
-from .ssl_in_socks import sslInSocksReaderWriter
-
 ca_path = requests.certs.where()
 
+from .util import print_error
+from .ssl_in_socks import sslInSocksReaderWriter
 from . import util
 from . import x509
 from . import pem
@@ -67,7 +68,8 @@ class Interface(util.PrintError):
     - Member variable server.
     """
 
-    def __init__(self, server, config_path, proxy_config):
+    def __init__(self, server, config_path, proxy_config, is_running):
+        self.is_running = is_running
         self.addr = self.auth = None
         if proxy_config is not None:
             if proxy_config["mode"] == "socks5":
@@ -93,6 +95,162 @@ class Interface(util.PrintError):
         self.unanswered_requests = {}
         self.last_ping = 0
         self.closed_remotely = False
+        self.buf = bytes()
+
+    def conn_coro(self, context):
+        return asyncio.open_connection(self.host, self.port, ssl=context)
+
+    async def _save_certificate(self, cert_path, require_ca):
+        dercert = None
+        if require_ca:
+            context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_path)
+        else:
+            context = get_ssl_context(cert_reqs=ssl.CERT_NONE, ca_certs=None)
+        try:
+            if self.addr is not None:
+                proto_factory = lambda: SSLProtocol(asyncio.get_event_loop(), asyncio.Protocol(), context, None)
+                socks_create_coro = aiosocks.create_connection(proto_factory, \
+                                    proxy=self.addr, \
+                                    proxy_auth=self.auth, \
+                                    dst=(self.host, self.port))
+                transport, protocol = await asyncio.wait_for(socks_create_coro, 5)
+                async def job(fut):
+                    try:
+                        if protocol._sslpipe is not None:
+                            fut.set_result(protocol._sslpipe.ssl_object.getpeercert(True))
+                    except BaseException as e:
+                        fut.set_exception(e)
+                while self.is_running():
+                    fut = asyncio.Future()
+                    asyncio.ensure_future(job(fut))
+                    try:
+                        await fut
+                    except:
+                        pass
+                    try:
+                        fut.exception()
+                        dercert = fut.result()
+                    except ValueError:
+                        await asyncio.sleep(1)
+                        continue
+                    except:
+                        if self.is_running(): traceback.print_exc()
+                        continue
+                    break
+                if not self.is_running(): return
+                transport.close()
+            else:
+                reader, writer = await asyncio.wait_for(self.conn_coro(context), 3)
+                dercert = writer.get_extra_info('ssl_object').getpeercert(True)
+                writer.close()
+        except OSError as e: # not ConnectionError because we need socket.gaierror too
+            if self.is_running():
+                print(self.server, "Exception in _save_certificate", type(e))
+            return
+        except TimeoutError:
+            return
+        assert dercert
+        if not require_ca:
+            cert = ssl.DER_cert_to_PEM_cert(dercert)
+        else:
+            # Don't pin a CA signed certificate
+            cert = ""
+        temporary_path = cert_path + '.temp'
+        with open(temporary_path, "w") as f:
+            f.write(cert)
+        return temporary_path
+
+    async def _get_read_write(self):
+        async with self.lock:
+            if self.reader is not None and self.writer is not None:
+                return self.reader, self.writer, True
+            if self.use_ssl:
+                cert_path = os.path.join(self.config_path, 'certs', self.host)
+                if not os.path.exists(cert_path):
+                    temporary_path = await self._save_certificate(cert_path, False)
+                    if not temporary_path:
+                        temporary_path = await self._save_certificate(cert_path, True)
+                    if not temporary_path:
+                        raise ConnectionError("Could not get certificate on second try")
+
+                    is_new = True
+                else:
+                    is_new = False
+                ca_certs = temporary_path if is_new else cert_path
+
+                size = os.stat(ca_certs)[stat.ST_SIZE]
+                self_signed = size != 0
+                if not self_signed:
+                    ca_certs = ca_path
+            try:
+                if self.addr is not None:
+                    if not self.use_ssl:
+                        open_coro = aiosocks.open_connection(proxy=self.addr, proxy_auth=self.auth, dst=(self.host, self.port))
+                        self.reader, self.writer = await asyncio.wait_for(open_coro, 5)
+                    else:
+                        ssl_in_socks_coro = sslInSocksReaderWriter(self.addr, self.auth, self.host, self.port, ca_certs)
+                        self.reader, self.writer = await asyncio.wait_for(ssl_in_socks_coro, 5)
+                else:
+                    context = get_ssl_context(cert_reqs=ssl.CERT_REQUIRED, ca_certs=ca_certs) if self.use_ssl else None
+                    self.reader, self.writer = await asyncio.wait_for(self.conn_coro(context), 5)
+            except TimeoutError:
+                print("TimeoutError after getting certificate successfully...")
+                raise
+            except BaseException as e:
+                if self.is_running():
+                    if not isinstance(e, OSError):
+                        traceback.print_exc()
+                        print("Previous exception will now be reraised")
+                raise e
+            if self.use_ssl and is_new:
+                self.print_error("saving new certificate for", self.host)
+                os.rename(temporary_path, cert_path)
+            return self.reader, self.writer, False
+
+    async def send_all(self, list_of_requests):
+        _, w, usedExisting = await self._get_read_write()
+        starttime = time.time()
+        for i in list_of_requests:
+            w.write(json.dumps(i).encode("ascii") + b"\n")
+        await w.drain()
+        if time.time() - starttime > 2.5:
+            print("send_all: sending is taking too long. Used existing connection: ", usedExisting)
+            raise ConnectionError("sending is taking too long")
+
+    def close(self):
+        if self.writer:
+            self.writer.close()
+
+    def _try_extract(self):
+        try:
+            pos = self.buf.index(b"\n")
+        except ValueError:
+            return
+        obj = self.buf[:pos]
+        try:
+            obj = json.loads(obj.decode("ascii"))
+        except ValueError:
+            return
+        else:
+            self.buf = self.buf[pos+1:]
+            self.last_action = time.time()
+            return obj
+    async def get(self):
+        reader, _, _ = await self._get_read_write()
+
+        while self.is_running():
+            tried = self._try_extract()
+            if tried: return tried
+            temp = io.BytesIO()
+            try:
+                data = await asyncio.wait_for(reader.read(2**10), 1)
+                temp.write(data)
+            except asyncio.TimeoutError:
+                continue
+            self.buf += temp.getvalue()
+
+    def idle_time(self):
+        return time.time() - self.last_action
 
     def conn_coro(self, context):
         return asyncio.open_connection(self.host, self.port, ssl=context)
@@ -153,43 +311,6 @@ class Interface(util.PrintError):
                 os.rename(temporary_path, cert_path)
             return self.reader, self.writer
 
-    async def send_all(self, list_of_requests):
-        _, w = await self._get_read_write()
-        for i in list_of_requests:
-            w.write(json.dumps(i).encode("ascii") + b"\n")
-        await w.drain()
-
-    def close(self):
-        if self.writer:
-            self.writer.close()
-
-    async def get(self):
-        reader, _ = await self._get_read_write()
-
-        obj = b""
-        while True:
-            if len(obj) > 3000000:
-                raise BaseException("too much data: " + str(len(obj)))
-            try:
-                obj += await reader.readuntil(b"\n")
-            except asyncio.LimitOverrunError as e:
-                obj += await reader.read(e.consumed)
-            except asyncio.streams.IncompleteReadError as e:
-                return None
-            try:
-                obj = json.loads(obj.decode("ascii"))
-            except ValueError:
-                continue
-            else:
-                self.last_action = time.time()
-                return obj
-
-    def idle_time(self):
-        return time.time() - self.last_action
-
-    def diagnostic_name(self):
-        return self.host
-
     async def queue_request(self, *args):  # method, params, _id
         '''Queue a request, later to be send with send_requests when the
         socket is available for writing.
@@ -206,7 +327,10 @@ class Interface(util.PrintError):
         '''Sends queued requests.  Returns False on failure.'''
         make_dict = lambda m, p, i: {'method': m, 'params': p, 'id': i}
         n = self.num_requests()
-        prio, request = await self.unsent_requests.get()
+        try:
+            prio, request = await asyncio.wait_for(self.unsent_requests.get(), 1.5)
+        except TimeoutError:
+            return False
         try:
             await self.send_all([make_dict(*request)])
         except (SocksError, OSError, TimeoutError) as e:
@@ -249,10 +373,10 @@ class Interface(util.PrintError):
         '''
         response = await self.get()
         if not type(response) is dict:
-            print("response type not dict!", response)
             if response is None:
                 self.closed_remotely = True
-                self.print_error("connection closed remotely")
+                if self.is_running():
+                    self.print_error("connection closed remotely")
             return None, None
         if self.debug:
             self.print_error("<--", response)

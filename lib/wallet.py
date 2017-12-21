@@ -863,7 +863,8 @@ class Abstract_Wallet(PrintError):
     def dust_threshold(self):
         return dust_threshold(self.network)
 
-    def make_unsigned_transaction(self, inputs, outputs, config, fixed_fee=None, change_addr=None):
+    def make_unsigned_transaction(self, inputs, outputs, config, fixed_fee=None,
+                                  change_addr=None, is_sweep=False):
         # check outputs
         i_max = None
         for i, o in enumerate(outputs):
@@ -972,11 +973,6 @@ class Abstract_Wallet(PrintError):
             self.prepare_for_verifier()
             self.verifier = SPV(self.network, self)
             self.synchronizer = Synchronizer(self, network)
-
-            self.lightning = LightningRPC()
-            self.lightningworker = LightningWorker(lambda: self, lambda: network, lambda: network.config)
-            network.set_forever_coroutines([self.lightning, self.lightningworker])
-
             network.add_coroutines([self.verifier, self.synchronizer])
         else:
             self.verifier = None
@@ -985,7 +981,6 @@ class Abstract_Wallet(PrintError):
     def stop_threads(self):
         if self.network:
             self.network.remove_coroutines([self.synchronizer, self.verifier])
-            self.network.kill_forever_coroutines()
             self.synchronizer.release()
             self.synchronizer = None
             self.verifier = None
@@ -1105,7 +1100,7 @@ class Abstract_Wallet(PrintError):
         if self.is_mine(address):
             txin['type'] = self.get_txin_type(address)
             # segwit needs value to sign
-            if txin.get('value') is None and txin['type'] in ['p2wpkh', 'p2wsh', 'p2wpkh-p2sh', 'p2wsh-p2sh']:
+            if txin.get('value') is None and Transaction.is_segwit_input(txin):
                 received, spent = self.get_addr_io(address)
                 item = received.get(txin['prevout_hash']+':%d'%txin['prevout_n'])
                 tx_height, value, is_cb = item
