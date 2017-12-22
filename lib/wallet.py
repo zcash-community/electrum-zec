@@ -974,6 +974,9 @@ class Abstract_Wallet(PrintError):
             self.verifier = SPV(self.network, self)
             self.synchronizer = Synchronizer(self, network)
             network.add_coroutines([self.verifier, self.synchronizer])
+            self.lightning = LightningRPC()
+            self.lightningworker = LightningWorker(lambda: self, lambda: network, lambda: network.config)
+            network.set_forever_coroutines([self.lightning, self.lightningworker])
         else:
             self.verifier = None
             self.synchronizer = None

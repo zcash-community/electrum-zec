@@ -1122,9 +1122,11 @@ class Network(util.DaemonThread):
                 raise
         asyncio.ensure_future(job())
         run_future = asyncio.Future()
+        self.run_forever_coroutines()
         asyncio.ensure_future(self.run_async(run_future))
 
         loop.run_until_complete(run_future)
+        assert self.forever_coroutines_task.done()
         run_future.exception()
         self.print_error("run future result", run_future.result())
         loop.close()

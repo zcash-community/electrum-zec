@@ -24,6 +24,8 @@ import base64
 
 import asyncio
 
+from concurrent.futures import TimeoutError
+
 WALLET = None
 NETWORK = None
 CONFIG = None
@@ -643,9 +645,9 @@ class LightningRPC(ForeverCoroutineJob):
         super(LightningRPC, self).__init__()
         self.queue = queue.Queue()
     # overridden
-    async def run(self):
+    async def run(self, is_running):
       print("RPC STARTED")
-      while True:
+      while is_running():
         try:
             qitem = self.queue.get(block=False)
         except queue.Empty:
@@ -697,13 +699,13 @@ class LightningWorker(ForeverCoroutineJob):
         deser = bitcoin.deserialize_xpub(wallet().keystore.xpub)
         assert deser[0] == "p2wpkh", deser
 
-    async def run(self):
+    async def run(self, is_running):
         global WALLET, NETWORK
         global CONFIG
 
         wasAlreadyUpToDate = False
 
-        while True:
+        while is_running():
             WALLET = self.wallet()
             NETWORK = self.network()
             CONFIG = self.config()
@@ -724,69 +726,74 @@ class LightningWorker(ForeverCoroutineJob):
                 writer.write(b"MAGIC")
                 writer.write(privateKeyHash[:6])
                 await writer.drain()
-                data = b""
-                while True:
-                  try:
-                    json.loads(data)
-                  except ValueError:
-                    data += await reader.read(1)
-                  else:
-                    break
-                obj = json.loads(data)
+                while is_running():
+                    obj = await readJson(reader, is_running)
+                    if not obj: continue
+                    await readReqAndReply(obj, writer)
             except:
                 traceback.print_exc()
                 continue
-            else:
 
-                methods = [FetchRootKey
-                ,ConfirmedBalance
-                ,NewAddress
-                ,ListUnspentWitness
-                ,SetHdSeed
-                ,NewRawKey
-                ,FetchInputInfo
-                ,ComputeInputScript
-                ,SignOutputRaw
-                ,PublishTransaction
-                ,LockOutpoint
-                ,UnlockOutpoint
-                ,ListTransactionDetails
-                ,SendOutputs
-                ,IsSynced
-                ,SignMessage]
-                result = None
-                found = False
-                try:
-                    for method in methods:
-                        if method.__name__ == obj["method"]:
-                            params = obj["params"][0]
-                            print("calling method", obj["method"], "with", params)
-                            if asyncio.iscoroutinefunction(method):
-                                result = await method(params)
-                            else:
-                                result = method(params)
-                            found = True
-                            break
-                except BaseException as e:
-                    traceback.print_exc()
-                    print("exception while calling method", obj["method"])
-                    writer.write(json.dumps({"id":obj["id"],"error": {"code": -32002, "message": str(e)}}).encode("ascii"))
-                    await writer.drain()
+async def readJson(reader, is_running):
+    data = b""
+    while is_running():
+      if data != b"": print("parse failed, data has", data)
+      try:
+        return json.loads(data)
+      except ValueError:
+        try:
+            data += await asyncio.wait_for(reader.read(2048), 1)
+        except TimeoutError:
+            continue
+
+async def readReqAndReply(obj, writer):
+    methods = [FetchRootKey
+    ,ConfirmedBalance
+    ,NewAddress
+    ,ListUnspentWitness
+    ,SetHdSeed
+    ,NewRawKey
+    ,FetchInputInfo
+    ,ComputeInputScript
+    ,SignOutputRaw
+    ,PublishTransaction
+    ,LockOutpoint
+    ,UnlockOutpoint
+    ,ListTransactionDetails
+    ,SendOutputs
+    ,IsSynced
+    ,SignMessage]
+    result = None
+    found = False
+    try:
+        for method in methods:
+            if method.__name__ == obj["method"]:
+                params = obj["params"][0]
+                print("calling method", obj["method"], "with", params)
+                if asyncio.iscoroutinefunction(method):
+                    result = await method(params)
                 else:
-                    if not found:
-                        writer.write(json.dumps({"id":obj["id"],"error": {"code": -32601, "message": "invalid method"}}).encode("ascii"))
-                    else:
-                        print("result was", result)
-                        if result is None:
-                            result = "{}"
-                        try:
-                            assert type({}) is type(json.loads(result))
-                        except:
-                            traceback.print_exc()
-                            print("wrong method implementation")
-                            writer.write(json.dumps({"id":obj["id"],"error": {"code": -32000, "message": "wrong return type in electrum-lightning-hub"}}).encode("ascii"))
-                        else:
-                            writer.write(json.dumps({"id":obj["id"],"result": result}).encode("ascii"))
-                    await writer.drain()
-            finally:
-                if writer: writer.close()
+                    result = method(params)
+                found = True
+                break
+    except BaseException as e:
+        traceback.print_exc()
+        print("exception while calling method", obj["method"])
+        writer.write(json.dumps({"id":obj["id"],"error": {"code": -32002, "message": str(e)}}).encode("ascii"))
+        await writer.drain()
+    else:
+        if not found:
+            writer.write(json.dumps({"id":obj["id"],"error": {"code": -32601, "message": "invalid method"}}).encode("ascii"))
+        else:
+            print("result was", result)
+            if result is None:
+                result = "{}"
+            try:
+                assert type({}) is type(json.loads(result))
+            except:
+                traceback.print_exc()
+                print("wrong method implementation")
+                writer.write(json.dumps({"id":obj["id"],"error": {"code": -32000, "message": "wrong return type in electrum-lightning-hub"}}).encode("ascii"))
+            else:
+                writer.write(json.dumps({"id":obj["id"],"result": result}).encode("ascii"))
+        await writer.drain()
