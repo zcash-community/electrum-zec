@@ -716,11 +716,6 @@ class Network(util.DaemonThread):
         We distinguish by whether it is in self.interfaces.'''
         async with self.all_server_locks("connection down"):
             if server in self.disconnected_servers:
-                try:
-                    raise Exception("already disconnected " + server + " because " + repr(self.disconnected_servers[server]) + ". new reason: " + repr(reason))
-                except:
-                    traceback.print_exc()
-                    sys.exit(1)
                 return
             self.print_error("connection down", server)
             self.disconnected_servers[server] = reason
@@ -1127,7 +1122,6 @@ class Network(util.DaemonThread):
         loop.run_until_complete(run_future)
         run_future.exception()
         self.print_error("run future result", run_future.result())
-        loop.close()
 
     async def run_async(self, future):
         try:
