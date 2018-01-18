@@ -99,9 +99,9 @@ class NetworkConstants:
         cls.WIF_PREFIX = 0xef
         cls.ADDRTYPE_P2PKH = [0x1D, 0x25]
         cls.ADDRTYPE_P2SH = [0x1C, 0xBA]
-        cls.ADDRTYPE_SHIELDED [0x16, 0xB6]
+        cls.ADDRTYPE_SHIELDED = [0x16, 0xB6]
         cls.SEGWIT_HRP = "tb" #TODO zcl has no segwit
-        cls.GENESIS = "03e1c4bb705c871bf9bfda3e74b7f8f86bff267993c215a89d5795e3708e5e1f"
+        cls.GENESIS = "041a201b82fdd5e129e798e45a1c893c1e423c9103633d0baa357ace72cde447"
         cls.DEFAULT_PORTS = {'t': '51001', 's': '51002'}
         cls.DEFAULT_SERVERS = read_json('servers_testnet.json', {})
         cls.CHECKPOINTS = read_json('checkpoints_testnet.json', [])
@@ -112,7 +112,7 @@ class NetworkConstants:
 
         cls.CHUNK_SIZE = 200
 
-NetworkConstants.set_mainnet()
+NetworkConstants.set_testnet()
 
 ################################## transactions
 

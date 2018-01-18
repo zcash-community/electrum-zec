@@ -949,11 +949,16 @@ class Network(util.DaemonThread):
 
     def init_headers_file(self):
         b = self.blockchains[0]
+        filename = b.path()
+        open(filename, 'wb+').close()
+        self.downloading_headers = False
+        return
+        
         print(b.get_hash(0), NetworkConstants.GENESIS)
         if b.get_hash(0) == NetworkConstants.GENESIS:
             self.downloading_headers = False
             return
-        filename = b.path()
+        
         def download_thread():
             try:
                 import urllib, socket
@@ -976,6 +981,7 @@ class Network(util.DaemonThread):
         t.start()
 
     def run(self):
+        print('zzzzzzzzzzzzzzzzzzzz')
         self.init_headers_file()
         while self.is_running() and self.downloading_headers:
             time.sleep(1)
