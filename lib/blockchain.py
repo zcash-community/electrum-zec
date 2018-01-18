@@ -63,19 +63,6 @@ def deserialize_header(f, height):
     h['block_height'] = height
     return h
 
-# def deserialize_header(f, height):
-#     h = {}
-#     h['version'] = struct.unpack("<I", f.read(4))[0]
-#     h['prev_block_hash'] = hash_to_str(f.read(32))
-#     h['merkle_root'] = hash_to_str(f.read(32))
-#     h['hash_reserved'] = hash_to_str(f.read(32))
-#     h['timestamp'] = struct.unpack("<I", f.read(4))[0]
-#     h['bits'] = struct.unpack("<I", f.read(4))[0]
-#     h['nonce'] = hash_to_str(f.read(32))
-#     h['n_solution'] = base64.b64encode(bytes(deser_char_vector(f))).decode('utf8')
-#     h['block_height'] = height
-#     return h
-
 def sha256_header(header):
     return uint256_from_bytes(Hash(serialize_header(header)))
 
@@ -199,8 +186,8 @@ class Blockchain(util.PrintError):
             prev_header = self.read_header(index * NetworkConstants.CHUNK_SIZE - 1)
 
         for i in range(num):
-            raw_header = data[i*bitcoin.HEADER_SIZE:(i+1) * bitcoin.HEADER_SIZE]
-            header = deserialize_header(raw_header, index*NetworkConstants.CHUNK_SIZE + i)
+            raw_header = data[i * bitcoin.HEADER_SIZE : (i + 1) * bitcoin.HEADER_SIZE]
+            header = deserialize_header(raw_header, index * NetworkConstants.CHUNK_SIZE + i)
             self.verify_header(header, prev_header)
             prev_header = header
 
