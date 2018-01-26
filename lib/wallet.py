@@ -1527,6 +1527,7 @@ class Imported_Wallet(Simple_Wallet):
     def get_public_key(self, address):
         return self.addresses[address].get('pubkey')
 
+# TODO handle importing of shielded private keys see https://raw.githubusercontent.com/zcash/zips/master/protocol/protocol.pdf page 17
     def import_private_key(self, sec, pw, redeem_script=None):
         try:
             txin_type, pubkey = self.keystore.import_privkey(sec, pw)
@@ -1582,6 +1583,12 @@ class Imported_Wallet(Simple_Wallet):
         for addr, v in self.addresses.items():
             if v.get('pubkey') == pubkey:
                 return addr
+
+class Shielded_Wallet(PrintError):
+    wallet_type = 'shielded'
+
+    def __init__(self, storage):
+        self.storage = storage
 
 class Deterministic_Wallet(Abstract_Wallet):
 
@@ -1837,7 +1844,7 @@ class Multisig_Wallet(Deterministic_Wallet):
         txin['num_sig'] = self.m
 
 
-wallet_types = ['standard', 'multisig', 'imported']
+wallet_types = ['standard', 'multisig', 'imported', 'shielded']
 
 def register_wallet_type(category):
     wallet_types.append(category)
@@ -1846,7 +1853,8 @@ wallet_constructors = {
     'standard': Standard_Wallet,
     'old': Standard_Wallet,
     'xpub': Standard_Wallet,
-    'imported': Imported_Wallet
+    'imported': Imported_Wallet,
+    'shielded': Shielded_Wallet
 }
 
 def register_constructor(wallet_type, constructor):

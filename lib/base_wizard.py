@@ -85,6 +85,7 @@ class BaseWizard(object):
             ('2fa', _("Wallet with two-factor authentication")),
             ('multisig',  _("Multi-signature wallet")),
             ('imported',  _("Import Zclassic addresses or private keys")),
+            ('shielded',  _("Create a shielded wallet")),
         ]
         choices = [pair for pair in wallet_kinds if pair[0] in wallet_types]
         self.choice_dialog(title=title, message=message, choices=choices, run_next=self.on_wallet_type)
@@ -105,6 +106,8 @@ class BaseWizard(object):
             action = self.storage.get_action()
         elif choice == 'imported':
             action = 'import_addresses_or_keys'
+        elif choice == 'shielded':
+            action = 'import_shielded'
         self.run(action)
 
     def choose_multisig(self):
@@ -145,6 +148,12 @@ class BaseWizard(object):
         message = _("Enter a list of Zclassic addresses (this will create a watching-only wallet), or a list of private keys.")
         self.add_xpub_dialog(title=title, message=message, run_next=self.on_import,
                              is_valid=v, allow_multi=True)
+
+    def import_shielded(self):
+        title = _("Import Zclassic Private Keys")
+        message = _("Enter a list of Zclassic private keys.")
+        self.add_xpub_dialog(title=title, message=message, run_next=self.on_import,
+                             is_valid=keystore.is_private_key_list, allow_multi=True)
 
     def on_import(self, text):
         if keystore.is_address_list(text):
