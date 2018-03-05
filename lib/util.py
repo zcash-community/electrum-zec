@@ -44,7 +44,7 @@ def inv_dict(d):
 is_bundle = getattr(sys, 'frozen', False)
 is_macOS = sys.platform == 'darwin'
 
-base_units = {'ZCL':8, 'mZCL':5, 'uZCL':2}
+base_units = {'ZEC':8, 'mZEC':5, 'uZEC':2}
 fee_levels = [_('Within 25 blocks'), _('Within 10 blocks'), _('Within 5 blocks'), _('Within 2 blocks'), _('In the next block')]
 
 def normalize_version(v):
@@ -327,11 +327,11 @@ def user_dir():
     if 'ANDROID_DATA' in os.environ:
         return android_check_data_dir()
     elif os.name == 'posix':
-        return os.path.join(os.environ["HOME"], ".electrum-zcl")
+        return os.path.join(os.environ["HOME"], ".electrum-zec")
     elif "APPDATA" in os.environ:
-        return os.path.join(os.environ["APPDATA"], "Electrum-zcl")
+        return os.path.join(os.environ["APPDATA"], "Electrum-zec")
     elif "LOCALAPPDATA" in os.environ:
-        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-zcl")
+        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-zec")
     else:
         #raise Exception("No home directory found in environment variables.")
         return
@@ -432,29 +432,14 @@ def time_difference(distance_in_time, include_seconds):
 
 # For raw json, append /insight-api-zcash
 mainnet_block_explorers = {
-    'Zcl-explorer.com': ('http://zcl-explorer.com/insight/',
+    'Explorer.Zcha.in': ('https://explorer.zcha.in/',
                         {'tx': 'tx', 'addr': 'address'}),
-    'zclzclzcl.com': ('http://zclzclzcl.com',
-                        {'tx': 'tx', 'addr': 'address'}),
-    'Zcl-explorer.com - Alternate 1': ('http://as1.zcl-explorer.com',
-                        {'tx': 'tx', 'addr': 'address'}),
-    'Zcl-explorer.com - Alternate 2': ('http://eu1.zcl-explorer.com',
-                        {'tx': 'tx', 'addr': 'address'}),
-    'explorer.zclassic.org': ('http://explorer.zclassic.org',
-                        {'tx': 'tx', 'addr': 'address'}),
-    'explorer1.zclassic.org': ('http://explorer1.zclassic.org',
+    'Zcash.Blockexplorer.com': ('https://zcash.blockexplorer.com/',
                         {'tx': 'tx', 'addr': 'address'})
 
 }
 
-#http://zcl-explorer.com/insight/
-#http://zclzclzcl.com
-#http://eu1.zcl-explorer.com
-#http://as1.zcl-explorer.com
-#http://explorer.zclassic.org
-#http://explorer1.zclassic.org
-
-# TODO zcl testnet block explorer
+# TODO zec testnet block explorer
 testnet_block_explorers = {
     #'Blocktrail.com': ('https://www.blocktrail.com/tBTC',
                        #{'tx': 'tx', 'addr': 'address'}),
@@ -467,7 +452,7 @@ def block_explorer_info():
     return testnet_block_explorers if bitcoin.NetworkConstants.TESTNET else mainnet_block_explorers
 
 def block_explorer(config):
-    return config.get('block_explorer', 'Zcl-explorer.com')
+    return config.get('Explorer.Zcha.in', 'Zcash.Blockexplorer.com')
 
 def block_explorer_tuple(config):
     return block_explorer_info().get(block_explorer(config))
@@ -492,7 +477,7 @@ def parse_URI(uri, on_pr=None):
 
     if ':' not in uri:
         if not bitcoin.is_address(uri):
-            raise BaseException("Not a Zclassic address")
+            raise BaseException("Not a Zcash address")
         return {'address': uri}
 
     u = urllib.parse.urlparse(uri)

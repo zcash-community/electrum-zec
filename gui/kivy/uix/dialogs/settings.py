@@ -46,13 +46,13 @@ Builder.load_string('''
                 SettingsItem:
                     bu: app.base_unit
                     title: _('Denomination') + ': ' + self.bu
-                    description: _("Base unit for Zclassic amounts.")
+                    description: _("Base unit for Zcash amounts.")
                     action: partial(root.unit_dialog, self)
                 CardSeparator
                 SettingsItem:
                     status: root.fee_status()
                     title: _('Fees') + ': ' + self.status
-                    description: _("Fees paid to the Zclassic miners.")
+                    description: _("Fees paid to the Zcash miners.")
                     action: partial(root.fee_dialog, self)
                 CardSeparator
                 SettingsItem:

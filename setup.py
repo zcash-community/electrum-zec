@@ -49,7 +49,7 @@ if platform.system() in ['Linux', 'FreeBSD', 'DragonFly']:
     ]
 
 setup(
-    name="Electrum-ZCL",
+    name="Electrum-ZEC",
     version=version.ELECTRUM_VERSION,
     install_requires=install_requires,
     tests_require=tests_requires,
@@ -90,10 +90,10 @@ setup(
     },
     scripts=['electrum'],
     data_files=data_files,
-    description="Lightweight Zclassic Wallet",
-    author="BTCP Community",
-    author_email="csulmone@gmail.com",
+    description="Lightweight Zcash Wallet",
+    author="Mikael Johansson",
+    author_email="mikael@johansson.lc",
     license="MIT Licence",
-    url="https://zclassic.org",
-    long_description="""Lightweight Zclassic Wallet"""
+    url="https://github.com/johanssonlc/electrum-zec/",
+    long_description="""Lightweight Zcash Wallet"""
 )

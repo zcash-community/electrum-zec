@@ -72,7 +72,7 @@ XPUB_HEADERS = {
 
 class NetworkConstants:
 
-    # https://github.com/z-classic/zclassic/blob/master/src/chainparams.cpp#L103
+    # https://github.com/zcash/zcash/blob/master/src/chainparams.cpp#L103
     @classmethod
     def set_mainnet(cls):
         cls.TESTNET = False
@@ -80,18 +80,19 @@ class NetworkConstants:
         cls.ADDRTYPE_P2PKH = [0x1C, 0xB8]
         cls.ADDRTYPE_P2SH = [0x1C, 0xBD]
         cls.ADDRTYPE_SHIELDED = [0x16, 0x9A]
-        cls.SEGWIT_HRP = "bc" #TODO zcl has no segwit
-        cls.GENESIS = "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602"
+        cls.SEGWIT_HRP = "bc" #TODO zec has no segwit
+        cls.GENESIS = "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08"
         cls.DEFAULT_PORTS = {'t': '50001', 's': '50002'}
         cls.DEFAULT_SERVERS = read_json('servers.json', {})
         cls.CHECKPOINTS = read_json('checkpoints.json', [])
         cls.EQUIHASH_N = 200
         cls.EQUIHASH_K = 9
-        cls.HEADERS_URL = "http://headers.zcl-electrum.com/blockchain_headers"
+        
+	#cls.HEADERS_URL = "http://headers.zcl-electrum.com/blockchain_headers" #TODO
 
         cls.CHUNK_SIZE = 200
 
-    # https://github.com/z-classic/zclassic/blob/master/src/chainparams.cpp#L234
+    # https://github.com/zcash/zcash/blob/master/src/chainparams.cpp#L234
     @classmethod
     def set_testnet(cls):
         cls.TESTNET = True
@@ -99,15 +100,15 @@ class NetworkConstants:
         cls.ADDRTYPE_P2PKH = [0x1D, 0x25]
         cls.ADDRTYPE_P2SH = [0x1C, 0xBA]
         cls.ADDRTYPE_SHIELDED = [0x16, 0xB6]
-        cls.SEGWIT_HRP = "tb" #TODO zcl has no segwit
-        cls.GENESIS = "03e1c4bb705c871bf9bfda3e74b7f8f86bff267993c215a89d5795e3708e5e1f"
+        cls.SEGWIT_HRP = "tb" #TODO zec has no segwit
+        cls.GENESIS = "05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38"
         cls.DEFAULT_PORTS = {'t': '51001', 's': '51002'}
         cls.DEFAULT_SERVERS = read_json('servers_testnet.json', {})
         cls.CHECKPOINTS = read_json('checkpoints_testnet.json', [])
         cls.EQUIHASH_N = 200
         cls.EQUIHASH_K = 9
 
-        #cls.HEADERS_URL = "http://35.224.186.7/blockchain_headers"
+        #cls.HEADERS_URL = "http://35.224.186.7/blockchain_headers" #TODO
 
         cls.CHUNK_SIZE = 200
 
