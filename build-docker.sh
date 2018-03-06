@@ -1,3 +1,3 @@
 #!/bin/bash
 
-docker build -t electrum-zcl:latest .
+docker build -t electrum-zec:latest .

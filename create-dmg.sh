@@ -25,7 +25,7 @@ sudo python3 setup.py sdist
 echo "Creating python app using py2app"
 sudo ARCHFLAGS="-arch i386 -arch x86_64" sudo python3 setup-release.py py2app --includes sip
 
-echo "Creating python Electrum-ZCL.app and .dmg"
-sudo hdiutil create -fs HFS+ -volname "Electrum ZCL" -srcfolder "dist/Electrum ZCL.app" dist/electrum-zcl-$VERSION-macosx.dmg
+echo "Creating python Electrum-ZEC.app and .dmg"
+sudo hdiutil create -fs HFS+ -volname "Electrum ZEC" -srcfolder "dist/Electrum ZEC.app" dist/electrum-zec-$VERSION-macosx.dmg
 
 echo "Done!"

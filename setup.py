@@ -94,6 +94,6 @@ setup(
     author="Mikael Johansson",
     author_email="mikael@johansson.lc",
     license="MIT Licence",
-    url="https://github.com/johanssonlc/electrum-zec/",
+    url="https://github.com/zcash-community/electrum-zec/",
     long_description="""Lightweight Zcash Wallet"""
 )

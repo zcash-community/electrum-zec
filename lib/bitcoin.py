@@ -108,7 +108,7 @@ class NetworkConstants:
         cls.EQUIHASH_N = 200
         cls.EQUIHASH_K = 9
 
-        #cls.HEADERS_URL = "http://35.224.186.7/blockchain_headers" #TODO
+        cls.HEADERS_URL = "http://192.168.1.2/blockchain_headers" #TODO
 
         cls.CHUNK_SIZE = 200
 

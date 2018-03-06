@@ -2,6 +2,11 @@
     "CryptoCompare": [
         "USD",
         "EUR",
-        "CNY"
+        "CNY",
+	"GBP",
+	"KRW",
+	"RUB",
+	"JPY",
+	"CAD"
     ]
 }

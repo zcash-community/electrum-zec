@@ -499,7 +499,7 @@ def parse_URI(uri, on_pr=None):
     out = {k: v[0] for k, v in pq.items()}
     if address:
         if not bitcoin.is_address(address):
-            raise BaseException("Invalid Zclassic address:" + address)
+            raise BaseException("Invalid Zcash address:" + address)
         out['address'] = address
     if 'amount' in out:
         am = out['amount']
